@@ -7,7 +7,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { Plus, MapPin, X } from 'lucide-react';
 
 import type { Route } from '../types';
-import { apiGet, apiPost } from '../services/api';
+import { ApiError, apiGet, apiPost } from '../services/api';
 
 import StatusBadge   from '../components/StatusBadge';
 import SearchBar     from '../components/SearchBar';
@@ -117,7 +117,7 @@ const Routes: React.FC = () => {
   // ── State ──────────────────────────────────────────────────────────────────
   const [localRoutes,   setLocalRoutes]   = useState<Route[]>([]);
   const [loading,       setLoading]       = useState(true);
-  const [error,         setError]         = useState<string | null>(null);
+  const [error,         setError]         = useState<Error | null>(null);
   const [success,       setSuccess]       = useState('');
   const [searchTerm,    setSearchTerm]    = useState('');
   const [activeFilter,  setActiveFilter]  = useState<ActiveFilter>('all');
@@ -126,7 +126,7 @@ const Routes: React.FC = () => {
   const [formErrors,    setFormErrors]    = useState<Partial<RouteFormData>>({});
 
   useEffect(() => {
-    apiGet<Route[]>('/routes').then(setLocalRoutes).catch((requestError: Error) => setError(requestError.message)).finally(() => setLoading(false));
+    apiGet<Route[]>('/routes').then(setLocalRoutes).catch((requestError: Error) => setError(requestError)).finally(() => setLoading(false));
   }, []);
 
   // ── Derived data ──────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ const Routes: React.FC = () => {
       setSuccess('Route saved to the backend and list refreshed.');
       closeModal();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Unable to create route');
+      setError(requestError instanceof Error ? requestError : new Error('Unable to create route'));
     }
   };
 
@@ -278,8 +278,9 @@ const Routes: React.FC = () => {
       </div>
 
       {error && (
-        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {error}
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          <p>{error.message}</p>
+          {error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}
         </div>
       )}
       {success && <p role="status" className="text-sm text-emerald-700">{success}</p>}

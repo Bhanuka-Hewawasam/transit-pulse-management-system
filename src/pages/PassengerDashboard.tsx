@@ -9,7 +9,7 @@ import type { Booking, Feedback, Passenger, Route, Trip } from '../types';
 type BookingRow = { id: number; route: string; seat: string; bookingDate: string; amount: string; status: string };
 type ContentItem = { title: string; detail: string };
 const money = (amount: number) => `LKR ${amount.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const displayDate = (value?: string) => value ? new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: value.includes('T') ? 'short' : undefined }) : '—';
+const displayDate = (value?: string | null) => value ? new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: value.includes('T') ? 'short' : undefined }) : '—';
 
 const PassengerDashboard: React.FC = () => {
   const [passengers, setPassengers] = useState<Passenger[]>([]);

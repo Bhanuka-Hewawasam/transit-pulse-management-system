@@ -17,7 +17,7 @@ describe('SmartMove application smoke tests', () => {
   it('renders the Reports page controls and route report', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Reports' }));
-    expect(screen.getByRole('button', { name: 'Most Frequently Used Routes' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Most used routes' })).toBeInTheDocument();
     expect(screen.getByText('Business Reports')).toBeInTheDocument();
   });
 

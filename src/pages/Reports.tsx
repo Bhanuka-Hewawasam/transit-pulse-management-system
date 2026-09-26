@@ -20,7 +20,7 @@ type ReportData = {
 };
 
 const money = (amount: number) => `LKR ${amount.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const formatDate = (value?: string) => value ? new Date(value).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+const formatDate = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 const routeName = (route?: Route) => route ? `${route.routeCode} · ${route.origin} to ${route.destination}` : 'Unknown route';
 const passengerName = (passenger?: Passenger) => passenger ? `${passenger.firstName} ${passenger.lastName}` : 'Unknown passenger';
 

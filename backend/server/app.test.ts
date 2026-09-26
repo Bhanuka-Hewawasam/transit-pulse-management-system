@@ -21,13 +21,14 @@ describe('SmartMove backend API', () => {
   beforeEach(() => {
     process.env.DATABASE_MODE = 'demo';
     vi.clearAllMocks();
-    oracleMocks.health.mockResolvedValue({ database: 'Oracle', connected: false, mode: 'oracle', message: 'Oracle configuration is incomplete' });
+    oracleMocks.health.mockResolvedValue({ database: 'Oracle', connected: false, mode: 'demo', message: 'Oracle configuration is incomplete' });
   });
 
   it('reports database health without affecting demo data mode', async () => {
     const response = await request(app).get('/api/health/databases');
     expect(response.status).toBe(200);
-    expect(response.body.oracle.mode).toBe('oracle');
+    expect(response.body.mode).toBe('demo');
+    expect(response.body.oracle.mode).toBe('demo');
     expect(response.body.mongodb.mode).toBe('demo');
     expect(response.body.oracle.connected).toBe(false);
   });
@@ -58,6 +59,17 @@ describe('SmartMove backend API', () => {
     expect(oracleMocks.list).toHaveBeenCalledWith('vehicles');
   });
 
+  it('reports Oracle as the active mode when DATABASE_MODE is oracle', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.health.mockResolvedValue({ database: 'Oracle', connected: true, mode: 'oracle', message: 'Oracle connection is healthy' });
+
+    const response = await request(app).get('/api/health/databases');
+
+    expect(response.status).toBe(200);
+    expect(response.body.mode).toBe('oracle');
+    expect(response.body.oracle.connected).toBe(true);
+  });
+
   it('inserts vehicles through Oracle and returns the inserted row', async () => {
     process.env.DATABASE_MODE = 'oracle';
     const vehicle = { id: 41, registrationNumber: 'TEST-0041', make: 'Tata', model: 'Starbus' };
@@ -78,7 +90,7 @@ describe('SmartMove backend API', () => {
     ['/api/bookings', 'bookings', { tripId: 1, passengerId: 1, seatNumber: 'A1', amount: 50 }],
     ['/api/payments', 'payments', { bookingId: 1, amount: 50, method: 'cash' }],
     ['/api/maintenance', 'maintenance', { vehicleId: 1, description: 'Inspection', scheduledDate: '2030-01-01' }],
-    ['/api/feedback', 'feedback', { passengerId: 1, tripId: 1, driverId: 1, vehicleId: 1, rating: 5 }],
+    ['/api/feedback', 'feedback', { passengerId: 1, tripId: 1, driverId: 1, vehicleId: 1, rating: 5, comment: 'Good service' }],
   ])('routes %s inserts to Oracle', async (path, resource, payload) => {
     process.env.DATABASE_MODE = 'oracle';
     oracleMocks.create.mockResolvedValue({ id: 9 });

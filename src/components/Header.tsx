@@ -1,13 +1,14 @@
 // File: d:\Robo_Mob\Robo-Controller\smartmove\src\components\Header.tsx
 
 import React, { useState, useEffect } from 'react';
-import { Clock } from 'lucide-react';
+import { Clock, Menu } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface HeaderProps {
   /** The page name displayed as the header title, e.g. 'Dashboard' */
   currentPage: string;
+  onOpenMenu: () => void;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ function formatDateTime(date: Date): string {
  * the app version label, and a user avatar. It sits to the right of the
  * 256 px sidebar (ml-64).
  */
-const Header: React.FC<HeaderProps> = ({ currentPage }) => {
+const Header: React.FC<HeaderProps> = ({ currentPage, onOpenMenu }) => {
   const [now, setNow] = useState<Date>(new Date());
 
   // Update the clock every second
@@ -82,6 +83,7 @@ const Header: React.FC<HeaderProps> = ({ currentPage }) => {
     >
       {/* ── Left: page title ── */}
       <div className="flex items-center gap-3">
+        <button type="button" onClick={onOpenMenu} aria-label="Open navigation" className="flex h-9 w-9 items-center justify-center rounded text-gray-600 hover:bg-gray-100 md:hidden"><Menu size={19} /></button>
         <h1 className="text-xl font-semibold" style={{ color: '#0f2044' }}>
           {formatPageTitle(currentPage)}
         </h1>

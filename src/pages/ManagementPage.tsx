@@ -23,6 +23,15 @@ type FieldSpec = {
 };
 type Lookups = Partial<Record<EntityName, Record<string, unknown>[]>>;
 
+class FieldValidationError extends Error {
+  field: string;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.field = field;
+  }
+}
+
 const text = (value: unknown) => String(value ?? '—');
 const money = (value: unknown) => `LKR ${Number(value ?? 0).toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const displayDate = (value: unknown) => {
@@ -227,23 +236,32 @@ function makePayload(page: string, form: Record<string, string>): Record<string,
   for (const field of specs) {
     const raw = form[field.name] ?? field.defaultValue ?? '';
     if (!raw.trim()) {
-      if (field.required) throw new Error(`${field.label} is required.`);
+      if (field.required) throw new FieldValidationError(field.name, `${field.label} is required.`);
       if (field.type === 'date' && field.optional) payload[field.name] = null;
       continue;
     }
     if (field.type === 'number' || field.lookup) {
       const parsed = Number(raw);
-      if (!Number.isFinite(parsed)) throw new Error(`${field.label} must be a valid number.`);
-      if (field.step === 1 && !Number.isInteger(parsed)) throw new Error(`${field.label} must be a whole number.`);
-      if (field.min !== undefined && parsed < field.min) throw new Error(`${field.label} must be at least ${field.min}.`);
-      if (field.max !== undefined && parsed > field.max) throw new Error(`${field.label} must be no more than ${field.max}.`);
+      if (!Number.isFinite(parsed)) throw new FieldValidationError(field.name, `${field.label} must be a valid number.`);
+      if (field.step === 1 && !Number.isInteger(parsed)) throw new FieldValidationError(field.name, `${field.label} must be a whole number.`);
+      if (field.min !== undefined && field.max !== undefined && (parsed < field.min || parsed > field.max)) {
+        throw new FieldValidationError(field.name, `${field.label} must be between ${field.min} and ${field.max}.`);
+      }
+      if (field.min !== undefined && parsed < field.min) throw new FieldValidationError(field.name, `${field.label} must be at least ${field.min}.`);
+      if (field.max !== undefined && parsed > field.max) throw new FieldValidationError(field.name, `${field.label} must be no more than ${field.max}.`);
       payload[field.name] = parsed;
     } else if (field.type === 'date' || field.type === 'datetime-local') {
-      if (Number.isNaN(new Date(raw).getTime())) throw new Error(`${field.label} must be a valid date.`);
+      if (Number.isNaN(new Date(raw).getTime())) throw new FieldValidationError(field.name, `${field.label} must be a valid date.`);
       payload[field.name] = raw;
+    } else if (field.type === 'email') {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) throw new FieldValidationError(field.name, `${field.label} must be a valid email address.`);
+      payload[field.name] = raw.trim();
     } else {
       payload[field.name] = raw.trim();
     }
+  }
+  if (page === 'trips' && Number(payload.availableSeats) > Number(payload.totalSeats)) {
+    throw new FieldValidationError('availableSeats', 'Available seats cannot exceed total seats.');
   }
   return payload;
 }
@@ -257,14 +275,13 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
   const [lookups, setLookups] = useState<Lookups>({});
   const [error, setError] = useState<ApiError | Error | null>(null);
   const [formError, setFormError] = useState<ApiError | Error | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState('');
   const [form, setForm] = useState<Record<string, string>>({});
   const specs = forms[page] ?? [];
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError(null);
     loadPage(page).then((result) => {
       if (!active) return;
       setRecords(result.rows);
@@ -285,18 +302,29 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
     try {
       payload = makePayload(page, form);
     } catch (validationError) {
-      setFormError(validationError instanceof Error ? validationError : new Error('Check the entered values.'));
+      if (validationError instanceof FieldValidationError) {
+        setFieldErrors({ [validationError.field]: validationError.message });
+        setFormError(new Error('Correct the highlighted field before saving.'));
+      } else {
+        setFormError(validationError instanceof Error ? validationError : new Error('Check the entered values.'));
+      }
       return;
     }
 
     setSaving(true);
     try {
       await apiPost(apiEndpoints[page as EntityName], payload);
-      const refreshed = await loadPage(page);
-      setRecords(refreshed.rows);
-      setLookups(refreshed.lookups);
       setForm({});
-      setSuccess(`${meta.title.slice(0, -1)} saved to the backend and list refreshed.`);
+      setFieldErrors({});
+      setSuccess(`${meta.title.slice(0, -1)} saved to the backend.`);
+      try {
+        const refreshed = await loadPage(page);
+        setRecords(refreshed.rows);
+        setLookups(refreshed.lookups);
+        setError(null);
+      } catch (refreshError) {
+        setFormError(new Error(`The record was saved, but the list could not be refreshed: ${refreshError instanceof Error ? refreshError.message : 'Refresh failed.'}`));
+      }
     } catch (requestError) {
       setFormError(requestError instanceof Error ? requestError : new Error('Unable to save this record.'));
     } finally {
@@ -328,25 +356,32 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
             const value = form[field.name] ?? field.defaultValue ?? '';
             const inputClass = 'w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100';
             const options = field.lookup ? lookups[field.lookup] ?? [] : [];
+            const fieldError = fieldErrors[field.name];
             const setValue = (nextValue: string) => {
               setForm((previous) => ({ ...previous, [field.name]: nextValue }));
               setFormError(null);
+              setFieldErrors((previous) => {
+                const next = { ...previous };
+                delete next[field.name];
+                return next;
+              });
               setSuccess('');
             };
             return (
               <label key={field.name} className={`block space-y-1 text-sm font-medium text-gray-700 ${field.type === 'textarea' ? 'sm:col-span-2 lg:col-span-3' : ''}`}>
                 <span>{field.label}{field.required ? ' *' : field.optional ? ' (optional)' : ''}</span>
                 {field.type === 'select' ? (
-                  <select aria-label={field.label} value={value} required={field.required} onChange={(event) => setValue(event.target.value)} className={inputClass}>
+                  <select aria-label={field.label} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `${field.name}-error` : undefined} value={value} required={field.required} onChange={(event) => setValue(event.target.value)} className={inputClass}>
                     <option value="">{field.lookup ? `Select ${field.label.toLowerCase()}` : `Select ${field.label.toLowerCase()}`}</option>
                     {field.options?.map((option) => <option key={option} value={option}>{option.replaceAll('_', ' ')}</option>)}
                     {options.map((option) => <option key={String(option.id)} value={String(option.id)}>{field.lookup === 'routes' ? routeLabel(option) : field.lookup === 'vehicles' ? `${text(option.registrationNumber)} · ${text(option.make)} ${text(option.model)}` : field.lookup === 'drivers' || field.lookup === 'passengers' ? fullName(option) : field.lookup === 'trips' ? `${text(option.id)} · ${text(option.routeCode ?? option.routeId)} · ${displayDate(option.departureTime)}` : field.lookup === 'bookings' ? `Booking #${text(option.id)} · ${text(option.seatNumber)}` : text(option.id)}</option>)}
                   </select>
                 ) : field.type === 'textarea' ? (
-                  <textarea aria-label={field.label} value={value} required={field.required} rows={3} onChange={(event) => setValue(event.target.value)} className={inputClass} />
+                  <textarea aria-label={field.label} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `${field.name}-error` : undefined} value={value} required={field.required} rows={3} onChange={(event) => setValue(event.target.value)} className={inputClass} />
                 ) : (
-                  <input aria-label={field.label} type={field.type} value={value} required={field.required} min={field.min} max={field.max} step={field.step} onChange={(event) => setValue(event.target.value)} className={inputClass} />
+                  <input aria-label={field.label} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `${field.name}-error` : undefined} type={field.type} value={value} required={field.required} min={field.min} max={field.max} step={field.step} onChange={(event) => setValue(event.target.value)} className={inputClass} />
                 )}
+                {fieldError && <span id={`${field.name}-error`} className="block text-xs text-red-700">{fieldError}</span>}
               </label>
             );
           })}
@@ -360,7 +395,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
         {formError && <div role="alert" className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><p>{formError.message}</p>{formError instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{formError.technicalMessage}</code></details>}</div>}
       </form>
       {error && <div role="alert" className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-800"><p>Unable to load {meta.title.toLowerCase()}: {error.message}</p>{error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}</div>}
-      <DataTable<RecordRow> columns={columnsFor[page] ?? []} data={rows} loading={loading} emptyMessage={search ? `No ${meta.title.toLowerCase()} match your search.` : `No ${meta.title.toLowerCase()} records exist in the connected database.`} />
+      <DataTable<RecordRow> columns={columnsFor[page] ?? []} data={rows} loading={loading} emptyMessage={search ? `No ${meta.title.toLowerCase()} match your search.` : 'No records exist in the connected database.'} />
     </div>
   );
 };

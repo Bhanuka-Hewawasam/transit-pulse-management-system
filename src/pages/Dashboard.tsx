@@ -24,7 +24,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-import { apiGet } from '../services/api';
+import { ApiError, apiGet } from '../services/api';
 
 // Components
 import StatCard from '../components/StatCard';
@@ -134,28 +134,29 @@ const Dashboard: React.FC = () => {
   const [revenue, setRevenue] = useState<number | null>(null);
   const [applicationMode, setApplicationMode] = useState<'oracle' | 'demo' | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError(null);
-    const revenueRequest = apiGet<{ revenue: number }[]>('/reports/revenue')
-      .then((rows) => rows.reduce((sum, row) => sum + Number(row.revenue), 0))
-      .catch(() => null);
     Promise.all([
       apiGet<Vehicle[]>('/vehicles'), apiGet<Driver[]>('/drivers'), apiGet<Passenger[]>('/passengers'),
       apiGet<Route[]>('/routes'), apiGet<Trip[]>('/trips'), apiGet<Booking[]>('/bookings'),
       apiGet<Payment[]>('/payments'), apiGet<MaintenanceRecord[]>('/maintenance'),
-      apiGet<{ mode: 'oracle' | 'demo' }>('/health/databases'), revenueRequest,
-    ]).then(([vehicleRows, driverRows, passengerRows, routeRows, tripRows, bookingRows, paymentRows, maintenanceRows, health, revenueTotal]) => {
+      apiGet<{ mode: 'oracle' | 'demo' }>('/health/databases'),
+    ]).then(async ([vehicleRows, driverRows, passengerRows, routeRows, tripRows, bookingRows, paymentRows, maintenanceRows, health]) => {
+      let revenueTotal: number | null = null;
+      if (health.mode === 'demo') {
+        revenueTotal = await apiGet<{ revenue: number }[]>('/reports/revenue')
+          .then((rows) => rows.reduce((sum, row) => sum + Number(row.revenue), 0))
+          .catch(() => null);
+      }
       if (!active) return;
       setVehicles(vehicleRows); setDrivers(driverRows); setPassengers(passengerRows); setRoutes(routeRows);
       setTrips(tripRows); setBookings(bookingRows); setPayments(paymentRows); setMaintenanceRecords(maintenanceRows);
       setApplicationMode(health.mode); setRevenue(revenueTotal);
     }).catch((requestError: Error) => {
-      if (active) setError(requestError.message);
+      if (active) setError(requestError);
     }).finally(() => {
       if (active) setLoading(false);
     });
@@ -261,10 +262,10 @@ const Dashboard: React.FC = () => {
     <div className="flex-1 overflow-y-auto bg-gray-50 min-h-screen">
       <div className="max-w-screen-xl mx-auto px-4 py-6 space-y-8">
         {loading && <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-700">Loading dashboard data…</div>}
-        {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">Unable to load dashboard data: {error}</div>}
+        {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800"><p>Unable to load dashboard data: {error.message}</p>{error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}</div>}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm text-gray-600" role="status">Application mode: <strong>{applicationMode === 'oracle' ? 'Oracle' : applicationMode === 'demo' ? 'Demo' : 'Checking'}</strong></p>
-          <button type="button" onClick={() => setReload((current) => current + 1)} disabled={loading} className="inline-flex items-center gap-2 rounded border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"><RefreshCw size={15} />Refresh</button>
+          <button type="button" onClick={() => { setError(null); setLoading(true); setReload((current) => current + 1); }} disabled={loading} className="inline-flex items-center gap-2 rounded border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"><RefreshCw size={15} />Refresh</button>
         </div>
         <DatabaseStatusCard />
 

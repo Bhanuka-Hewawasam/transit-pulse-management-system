@@ -13,11 +13,6 @@ const primaryKeyMap: Record<Resource, string> = {
   trips: 'TRIP_ID', bookings: 'BOOKING_ID', payments: 'PAYMENT_ID',
   maintenance: 'MAINTENANCE_ID', feedback: 'FEEDBACK_ID',
 };
-const sequenceMap: Record<Resource, string> = {
-  vehicles: 'SEQ_VEHICLES_ID', drivers: 'SEQ_DRIVERS_ID', routes: 'SEQ_ROUTES_ID',
-  passengers: 'SEQ_PASSENGERS_ID', trips: 'SEQ_TRIPS_ID', bookings: 'SEQ_BOOKINGS_ID',
-  payments: 'SEQ_PAYMENTS_ID', maintenance: 'SEQ_MAINTENANCE_ID', feedback: 'SEQ_FEEDBACK_ID',
-};
 let pool: oracledb.Pool | undefined;
 
 const configured = () => Boolean(process.env.ORACLE_USER && process.env.ORACLE_PASSWORD && process.env.ORACLE_CONNECT_STRING);

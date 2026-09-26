@@ -34,7 +34,7 @@ function UnavailablePage({ page }: { page: string }) {
     <section className="rounded-2xl border border-dashed border-gray-300 bg-white p-10 text-center shadow-sm">
       <h2 className="text-xl font-semibold text-gray-900">{pageLabels[page] ?? page}</h2>
       <p className="mt-2 text-sm text-gray-500">
-        This module is identified in the coursework checklist and is queued for implementation.
+          This section is not available.
       </p>
     </section>
   )
@@ -44,6 +44,7 @@ function App() {
   const pathRole: Role = window.location.pathname === '/passenger' ? 'passenger' : window.location.pathname === '/driver' ? 'driver' : 'admin';
   const [role, setRole] = useState<Role>(pathRole);
   const [activePage, setActivePage] = useState('dashboard')
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const switchRole = (nextRole: Role) => {
     setRole(nextRole);
@@ -54,7 +55,7 @@ function App() {
     if (activePage === 'dashboard') return <Dashboard />
     if (activePage === 'routes') return <RoutesPage />
     if (['vehicles', 'drivers', 'passengers', 'trips', 'bookings', 'payments', 'maintenance', 'feedback'].includes(activePage)) {
-      return <ManagementPage page={activePage} />
+      return <ManagementPage key={activePage} page={activePage} />
     }
     if (activePage === 'reports') return <Reports />
     if (activePage === 'mongodb') return <MongoDBContent />
@@ -67,9 +68,9 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Sidebar activePage={activePage} onNavigate={setActivePage} />
-      <Header currentPage={activePage} />
-      <main className="ml-64 pt-16">
+      <Sidebar activePage={activePage} onNavigate={setActivePage} isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Header currentPage={activePage} onOpenMenu={() => setSidebarOpen(true)} />
+      <main className="ml-0 pt-16 md:ml-64">
         <div className="mx-auto max-w-screen-xl px-6 py-6"><div className="mb-4 flex justify-end"><select value={role} onChange={(event) => switchRole(event.target.value as Role)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" aria-label="Demo role"><option value="admin">Admin demo</option><option value="passenger">Passenger demo</option><option value="driver">Driver demo</option></select></div>{renderPage()}</div>
       </main>
     </div>

@@ -2,6 +2,21 @@
 // SmartMove Transport Solutions — All Application Types
 // ============================================================
 
+export type ApplicationMode = 'oracle' | 'demo';
+
+export interface DatabaseHealth {
+  database: 'Oracle' | 'MongoDB';
+  connected: boolean;
+  mode: ApplicationMode | 'mongodb';
+  message: string;
+}
+
+export interface ApplicationHealth {
+  mode: ApplicationMode;
+  oracle: DatabaseHealth;
+  mongodb: DatabaseHealth;
+}
+
 export type VehicleStatus = 'active' | 'maintenance' | 'inactive';
 export type VehicleType = 'bus' | 'van' | 'minibus';
 
@@ -15,8 +30,8 @@ export interface Vehicle {
   capacity: number;
   status: VehicleStatus;
   fuelType: 'diesel' | 'petrol' | 'electric';
-  lastMaintenanceDate: string;
-  nextMaintenanceDate: string;
+  lastMaintenanceDate: string | null;
+  nextMaintenanceDate: string | null;
 }
 
 export type DriverStatus = 'available' | 'on_trip' | 'off_duty' | 'suspended';
@@ -27,8 +42,8 @@ export interface Driver {
   lastName: string;
   licenseNumber: string;
   licenseExpiry: string;
-  phone: string;
-  email: string;
+  phone: string | null;
+  email: string | null;
   status: DriverStatus;
   joinedDate: string;
   totalTrips: number;
@@ -53,7 +68,7 @@ export interface Passenger {
   lastName: string;
   email: string;
   phone: string;
-  address: string;
+  address: string | null;
   registeredDate: string;
   totalBookings: number;
   passportOrNic: string;
@@ -86,7 +101,7 @@ export interface Booking {
   tripId: number;
   passengerId: number;
   seatNumber: string;
-  bookingDate: string;
+  bookingDate: string | null;
   status: BookingStatus;
   amount: number;
   // Joined fields
@@ -104,10 +119,10 @@ export interface Payment {
   id: number;
   bookingId: number;
   amount: number;
-  paymentDate: string;
-  method: PaymentMethod;
+  paymentDate: string | null;
+  method: PaymentMethod | null;
   status: PaymentStatus;
-  transactionRef: string;
+  transactionRef: string | null;
   // Joined fields
   passengerName?: string;
   routeCode?: string;
@@ -119,13 +134,13 @@ export type MaintenanceType = 'routine' | 'repair' | 'inspection' | 'emergency';
 export interface MaintenanceRecord {
   id: number;
   vehicleId: number;
-  maintenanceType: MaintenanceType;
+  maintenanceType: MaintenanceType | null;
   description: string;
   scheduledDate: string;
   completedDate?: string;
-  cost: number;
+  cost: number | null;
   status: MaintenanceStatus;
-  technicianName: string;
+  technicianName: string | null;
   // Joined fields
   vehicleReg?: string;
   vehicleMake?: string;
@@ -138,9 +153,9 @@ export interface Feedback {
   driverId: number;
   vehicleId: number;
   rating: number;          // 1-5
-  comment: string;
-  feedbackDate: string;
-  category: 'service' | 'driver' | 'vehicle' | 'punctuality' | 'general';
+  comment: string | null;
+  feedbackDate: string | null;
+  category: 'service' | 'driver' | 'vehicle' | 'punctuality' | 'general' | null;
   // Joined fields
   passengerName?: string;
   driverName?: string;
@@ -150,6 +165,9 @@ export interface Feedback {
 
 export interface DashboardSummary {
   totalVehicles: number;
+  totalDrivers: number;
+  totalPassengers: number;
+  totalTrips: number;
   activeDrivers: number;
   upcomingTrips: number;
   totalBookings: number;

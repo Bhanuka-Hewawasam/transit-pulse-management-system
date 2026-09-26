@@ -138,7 +138,10 @@ app.get('/api/reports/most-used-routes', (_request, response) => {
 });
 app.get('/api/reports/revenue', (_request, response) => {
   const totals = new Map<string, number>();
-  database.payments.filter((payment) => payment.status === 'paid').forEach((payment) => totals.set(payment.paymentDate.slice(0, 7), (totals.get(payment.paymentDate.slice(0, 7)) ?? 0) + payment.amount));
+  database.payments.filter((payment) => payment.status === 'paid' && payment.paymentDate).forEach((payment) => {
+    const period = payment.paymentDate?.slice(0, 7);
+    if (period) totals.set(period, (totals.get(period) ?? 0) + payment.amount);
+  });
   response.json([...totals].map(([period, revenue]) => ({ period, revenue })));
 });
 app.get('/api/reports/passenger-history', (request, response) => {

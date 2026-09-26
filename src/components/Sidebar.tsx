@@ -28,6 +28,8 @@ interface NavItem {
 interface SidebarProps {
   activePage: string;
   onNavigate: (page: string) => void;
+  isOpen: boolean;
+  onClose: () => void;
 }
 
 // ─── Navigation config ───────────────────────────────────────────────────────
@@ -54,10 +56,12 @@ const NAV_ITEMS: NavItem[] = [
  * Sidebar – fixed left navigation panel for SmartMove TMS.
  * Width is w-64 (256 px). Remains full-height on all screen sizes.
  */
-const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate }) => {
+const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate, isOpen, onClose }) => {
   return (
-    <aside
-      className="fixed top-0 left-0 h-screen w-64 flex flex-col z-30 overflow-y-auto"
+    <>
+      {isOpen && <button type="button" aria-label="Close navigation" onClick={onClose} className="fixed inset-0 z-20 bg-black/40 md:hidden" />}
+      <aside
+      className={`fixed top-0 left-0 h-screen w-64 flex-col z-30 overflow-y-auto ${isOpen ? 'flex' : 'hidden md:flex'}`}
       style={{ backgroundColor: '#0f2044' }}
     >
       {/* ── Brand ── */}
@@ -89,7 +93,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate }) => {
           return (
             <button
               key={item.page}
-              onClick={() => onNavigate(item.page)}
+              onClick={() => { onNavigate(item.page); onClose(); }}
               className={[
                 'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 text-left',
                 isActive
@@ -125,7 +129,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate }) => {
           SmartMove TMS &copy; {new Date().getFullYear()}
         </p>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };
 

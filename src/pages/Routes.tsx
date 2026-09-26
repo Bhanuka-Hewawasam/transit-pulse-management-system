@@ -4,7 +4,7 @@
 // stop-count badges with tooltip, and an inline toggle-status button.
 
 import React, { useEffect, useState, useMemo } from 'react';
-import { Plus, Pencil, ToggleLeft, ToggleRight, MapPin } from 'lucide-react';
+import { Plus, MapPin, X } from 'lucide-react';
 
 import type { Route } from '../types';
 import { apiGet, apiPost } from '../services/api';
@@ -24,7 +24,7 @@ interface RouteFormData {
   routeCode:         string;
   origin:            string;
   destination:       string;
-  stopsRaw:          string; // comma-separated user input → split into string[]
+  stops:             string[];
   distanceKm:        string;
   estimatedMinutes:  string;
   fareAmount:        string;
@@ -35,7 +35,7 @@ const EMPTY_FORM: RouteFormData = {
   routeCode:        '',
   origin:           '',
   destination:      '',
-  stopsRaw:         '',
+  stops:            [],
   distanceKm:       '',
   estimatedMinutes: '',
   fareAmount:       '',
@@ -48,18 +48,15 @@ const EMPTY_FORM: RouteFormData = {
 const formatFare = (amount: number) =>
   `LKR ${amount.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-/** Parse RouteFormData → Route (minus id) */
+/** Parse RouteFormData into the backend request shape. */
 const parseForm = (f: RouteFormData) => ({
   routeCode:        f.routeCode.trim(),
   origin:           f.origin.trim(),
   destination:      f.destination.trim(),
-  stops:            f.stopsRaw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
-  distanceKm:       parseFloat(f.distanceKm) || 0,
-  estimatedMinutes: parseInt(f.estimatedMinutes, 10) || 0,
-  fareAmount:       parseFloat(f.fareAmount) || 0,
+  stops:            f.stops.map((stop) => stop.trim()).filter(Boolean),
+  distanceKm:       Number(f.distanceKm),
+  estimatedMinutes: Number(f.estimatedMinutes),
+  fareAmount:       Number(f.fareAmount),
   isActive:         f.isActive,
 });
 
@@ -121,10 +118,10 @@ const Routes: React.FC = () => {
   const [localRoutes,   setLocalRoutes]   = useState<Route[]>([]);
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState<string | null>(null);
+  const [success,       setSuccess]       = useState('');
   const [searchTerm,    setSearchTerm]    = useState('');
   const [activeFilter,  setActiveFilter]  = useState<ActiveFilter>('all');
   const [showAddModal,  setShowAddModal]  = useState(false);
-  const [editingRoute,  setEditingRoute]  = useState<Route | null>(null);
   const [formData,      setFormData]      = useState<RouteFormData>(EMPTY_FORM);
   const [formErrors,    setFormErrors]    = useState<Partial<RouteFormData>>({});
 
@@ -157,34 +154,16 @@ const Routes: React.FC = () => {
 
   // ── Form helpers ──────────────────────────────────────────────────────────
 
-  /** Open the Add modal with a blank form */
   const openAddModal = () => {
-    setEditingRoute(null);
     setFormData(EMPTY_FORM);
     setFormErrors({});
-    setShowAddModal(true);
-  };
-
-  /** Open the Edit modal pre-filled with the selected route's data */
-  const openEditModal = (route: Route) => {
-    setEditingRoute(route);
-    setFormData({
-      routeCode:        route.routeCode,
-      origin:           route.origin,
-      destination:      route.destination,
-      stopsRaw:         route.stops.join(', '),
-      distanceKm:       String(route.distanceKm),
-      estimatedMinutes: String(route.estimatedMinutes),
-      fareAmount:       String(route.fareAmount),
-      isActive:         route.isActive,
-    });
-    setFormErrors({});
+    setError(null);
+    setSuccess('');
     setShowAddModal(true);
   };
 
   const closeModal = () => {
     setShowAddModal(false);
-    setEditingRoute(null);
     setFormErrors({});
   };
 
@@ -202,49 +181,32 @@ const Routes: React.FC = () => {
     if (!formData.origin.trim())           errors.origin           = 'Required';
     if (!formData.destination.trim())      errors.destination      = 'Required';
     if (!formData.distanceKm ||
-        isNaN(parseFloat(formData.distanceKm)))
+      !Number.isFinite(Number(formData.distanceKm)) || Number(formData.distanceKm) <= 0)
                                            errors.distanceKm       = 'Enter a valid number';
     if (!formData.estimatedMinutes ||
-        isNaN(parseInt(formData.estimatedMinutes, 10)))
+      !Number.isInteger(Number(formData.estimatedMinutes)) || Number(formData.estimatedMinutes) < 1)
                                            errors.estimatedMinutes = 'Enter a valid integer';
     if (!formData.fareAmount ||
-        isNaN(parseFloat(formData.fareAmount)))
+      !Number.isFinite(Number(formData.fareAmount)) || Number(formData.fareAmount) <= 0)
                                            errors.fareAmount       = 'Enter a valid amount';
 
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
 
-  /** Save (add or update) the route */
+  /** Save a new route through the backend API. */
   const handleSave = async () => {
     if (!validate()) return;
 
     const parsed = parseForm(formData);
-
-    if (editingRoute) {
-      // Update existing
-      setLocalRoutes((prev) =>
-        prev.map((r) => r.id === editingRoute.id ? { ...r, ...parsed } : r)
-      );
-    } else {
-      // Add new
-      try {
-        const created = await apiPost<Route>('/routes', parsed);
-        setLocalRoutes((prev) => [...prev, created]);
-      } catch (requestError) {
-        setError(requestError instanceof Error ? requestError.message : 'Unable to create route');
-        return;
-      }
+    try {
+      await apiPost<Route>('/routes', parsed);
+      setLocalRoutes(await apiGet<Route[]>('/routes'));
+      setSuccess('Route saved to the backend and list refreshed.');
+      closeModal();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to create route');
     }
-
-    closeModal();
-  };
-
-  /** Toggle the isActive flag for a specific route */
-  const handleToggleStatus = (routeId: number) => {
-    setLocalRoutes((prev) =>
-      prev.map((r) => r.id === routeId ? { ...r, isActive: !r.isActive } : r)
-    );
   };
 
   // ── Table columns ─────────────────────────────────────────────────────────
@@ -285,39 +247,6 @@ const Routes: React.FC = () => {
       label:  'Status',
       render: (r) => <StatusBadge status={r.isActive ? 'active' : 'inactive'} />,
     },
-    {
-      key:    '_actions',
-      label:  'Actions',
-      render: (r) => (
-        <div className="flex items-center gap-2">
-          {/* Edit */}
-          <button
-            onClick={() => openEditModal(r)}
-            title="Edit route"
-            className="
-              p-1.5 rounded-lg text-blue-600 hover:bg-blue-50
-              transition-colors duration-100
-            "
-          >
-            <Pencil size={15} />
-          </button>
-
-          {/* Toggle active / inactive */}
-          <button
-            onClick={() => handleToggleStatus(r.id)}
-            title={r.isActive ? 'Deactivate route' : 'Activate route'}
-            className={`
-              p-1.5 rounded-lg transition-colors duration-100
-              ${r.isActive
-                ? 'text-amber-600 hover:bg-amber-50'
-                : 'text-green-600 hover:bg-green-50'}
-            `}
-          >
-            {r.isActive ? <ToggleRight size={15} /> : <ToggleLeft size={15} />}
-          </button>
-        </div>
-      ),
-    },
   ];
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -350,9 +279,10 @@ const Routes: React.FC = () => {
 
       {error && (
         <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          Unable to load routes: {error}
+          {error}
         </div>
       )}
+      {success && <p role="status" className="text-sm text-emerald-700">{success}</p>}
 
       {/* ── Controls bar ─────────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -402,7 +332,7 @@ const Routes: React.FC = () => {
       <Modal
         isOpen={showAddModal}
         onClose={closeModal}
-        title={editingRoute ? `Edit Route — ${editingRoute.routeCode}` : 'Add New Route'}
+        title="Add New Route"
         size="lg"
       >
         <div className="space-y-4">
@@ -469,23 +399,25 @@ const Routes: React.FC = () => {
             </div>
           </div>
 
-          {/* Row 3: Stops */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-1">
-              Stops{' '}
-              <span className="font-normal text-gray-400">(comma-separated, optional)</span>
-            </label>
-            <input
-              type="text"
-              value={formData.stopsRaw}
-              onChange={(e) => handleField('stopsRaw', e.target.value)}
-              placeholder="e.g. Kelaniya, Kadawatha, Nittambuwa"
-              className="
-                w-full rounded-lg border border-gray-200 px-3 py-2 text-sm
-                outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400
-              "
-            />
-          </div>
+          {/* Ordered optional stops */}
+          <fieldset className="space-y-2">
+            <legend className="text-xs font-semibold text-gray-700">Route stops (optional)</legend>
+            {formData.stops.map((stop, index) => (
+              <div key={index} className="flex gap-2">
+                <label className="sr-only" htmlFor={`route-stop-${index}`}>Stop {index + 1}</label>
+                <input
+                  id={`route-stop-${index}`}
+                  type="text"
+                  value={stop}
+                  onChange={(event) => setFormData((previous) => ({ ...previous, stops: previous.stops.map((value, stopIndex) => stopIndex === index ? event.target.value : value) }))}
+                  placeholder={`Stop ${index + 1}`}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                />
+                <button type="button" onClick={() => setFormData((previous) => ({ ...previous, stops: previous.stops.filter((_, stopIndex) => stopIndex !== index) }))} aria-label={`Remove stop ${index + 1}`} title="Remove stop" className="rounded p-2 text-gray-500 hover:bg-red-50 hover:text-red-700"><X size={16} /></button>
+              </div>
+            ))}
+            <button type="button" onClick={() => setFormData((previous) => ({ ...previous, stops: [...previous.stops, ''] }))} className="text-sm font-medium text-blue-700 hover:text-blue-900">Add stop</button>
+          </fieldset>
 
           {/* Row 4: Distance + Duration */}
           <div className="grid grid-cols-2 gap-3">
@@ -592,7 +524,7 @@ const Routes: React.FC = () => {
               "
               style={{ backgroundColor: '#0f2044' }}
             >
-              {editingRoute ? 'Save Changes' : 'Add Route'}
+              Add Route
             </button>
           </div>
         </div>

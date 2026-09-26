@@ -17,12 +17,13 @@ async function getDb(): Promise<Db> {
 }
 
 export async function mongodbHealth(): Promise<MongoHealth> {
-  if (!configured()) return { database: 'MongoDB', connected: false, mode: 'demo', message: 'MongoDB credentials are not configured; using demo data' };
+  const demoMode = process.env.DATABASE_MODE === 'demo';
+  if (!configured()) return { database: 'MongoDB', connected: false, mode: demoMode ? 'demo' : 'mongodb', message: demoMode ? 'MongoDB is not configured; demo content is available' : 'MongoDB is not configured' };
   try {
     await (await getDb()).command({ ping: 1 });
     return { database: 'MongoDB', connected: true, mode: 'mongodb', message: 'MongoDB connection is healthy' };
-  } catch (error) {
-    return { database: 'MongoDB', connected: false, mode: 'demo', message: `MongoDB unavailable; using demo data (${error instanceof Error ? error.message : 'connection error'})` };
+  } catch {
+    return { database: 'MongoDB', connected: false, mode: demoMode ? 'demo' : 'mongodb', message: demoMode ? 'MongoDB is unavailable; demo content is available' : 'MongoDB connection failed' };
   }
 }
 

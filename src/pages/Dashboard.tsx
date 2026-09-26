@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   MapPin,
   Clock,
+  RefreshCw,
 } from 'lucide-react';
 
 import { apiGet } from '../services/api';
@@ -33,7 +34,7 @@ import DatabaseStatusCard from '../components/DatabaseStatusCard';
 import type { Column } from '../components/DataTable';
 
 // Types
-import type { Booking, Driver, MaintenanceRecord, Payment, Trip, Vehicle } from '../types';
+import type { Booking, Driver, MaintenanceRecord, Passenger, Payment, Route, Trip, Vehicle } from '../types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -124,37 +125,48 @@ const bookingColumns: Column<Booking>[] = [
 const Dashboard: React.FC = () => {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [passengers, setPassengers] = useState<Passenger[]>([]);
+  const [routes, setRoutes] = useState<Route[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [maintenanceRecords, setMaintenanceRecords] = useState<MaintenanceRecord[]>([]);
+  const [revenue, setRevenue] = useState<number | null>(null);
+  const [applicationMode, setApplicationMode] = useState<'oracle' | 'demo' | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    const revenueRequest = apiGet<{ revenue: number }[]>('/reports/revenue')
+      .then((rows) => rows.reduce((sum, row) => sum + Number(row.revenue), 0))
+      .catch(() => null);
     Promise.all([
-      apiGet<Vehicle[]>('/vehicles'), apiGet<Driver[]>('/drivers'), apiGet<Trip[]>('/trips'),
-      apiGet<Booking[]>('/bookings'), apiGet<Payment[]>('/payments'), apiGet<MaintenanceRecord[]>('/maintenance'),
-    ]).then(([vehicleRows, driverRows, tripRows, bookingRows, paymentRows, maintenanceRows]) => {
-      setVehicles(vehicleRows); setDrivers(driverRows); setTrips(tripRows); setBookings(bookingRows); setPayments(paymentRows); setMaintenanceRecords(maintenanceRows);
-    }).catch((requestError: Error) => setError(requestError.message)).finally(() => setLoading(false));
-  }, [vehicles, drivers, trips, bookings, payments, maintenanceRecords]);
+      apiGet<Vehicle[]>('/vehicles'), apiGet<Driver[]>('/drivers'), apiGet<Passenger[]>('/passengers'),
+      apiGet<Route[]>('/routes'), apiGet<Trip[]>('/trips'), apiGet<Booking[]>('/bookings'),
+      apiGet<Payment[]>('/payments'), apiGet<MaintenanceRecord[]>('/maintenance'),
+      apiGet<{ mode: 'oracle' | 'demo' }>('/health/databases'), revenueRequest,
+    ]).then(([vehicleRows, driverRows, passengerRows, routeRows, tripRows, bookingRows, paymentRows, maintenanceRows, health, revenueTotal]) => {
+      if (!active) return;
+      setVehicles(vehicleRows); setDrivers(driverRows); setPassengers(passengerRows); setRoutes(routeRows);
+      setTrips(tripRows); setBookings(bookingRows); setPayments(paymentRows); setMaintenanceRecords(maintenanceRows);
+      setApplicationMode(health.mode); setRevenue(revenueTotal);
+    }).catch((requestError: Error) => {
+      if (active) setError(requestError.message);
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [reload]);
 
   // ── Computed summary stats ──────────────────────────────────────────────────
   const stats = useMemo(() => {
     const totalVehicles = vehicles.length;
 
-    const activeDrivers = drivers.filter(
-      (d) => d.status === 'available' || d.status === 'on_trip',
-    ).length;
-
-    const upcomingTrips = trips.filter((t) => t.status === 'scheduled').length;
-
-    const totalBookings = bookings.length;
-
-    const totalRevenue = payments
-      .filter((p) => p.status === 'paid')
-      .reduce((sum, p) => sum + p.amount, 0);
+    const upcomingTrips = trips.filter((trip) => trip.status === 'scheduled').length;
 
     const maintenanceAlerts = maintenanceRecords.filter(
       (m) => m.status === 'overdue' || m.status === 'in_progress',
@@ -162,18 +174,34 @@ const Dashboard: React.FC = () => {
 
     return {
       totalVehicles,
-      activeDrivers,
+      totalDrivers: drivers.length,
+      totalPassengers: passengers.length,
+      totalTrips: trips.length,
+      totalBookings: bookings.length,
       upcomingTrips,
-      totalBookings,
-      totalRevenue,
+      totalRevenue: revenue,
       maintenanceAlerts,
     };
-  }, [vehicles, drivers, trips, bookings, payments, maintenanceRecords]);
+  }, [vehicles, drivers, passengers, trips, bookings, revenue, maintenanceRecords]);
+
+  const joinedBookings = useMemo(() => bookings.map((booking) => {
+    const passenger = passengers.find((item) => item.id === booking.passengerId);
+    const trip = trips.find((item) => item.id === booking.tripId);
+    const route = routes.find((item) => item.id === trip?.routeId);
+    return {
+      ...booking,
+      passengerName: passenger ? `${passenger.firstName} ${passenger.lastName}` : `Passenger #${booking.passengerId}`,
+      routeCode: route?.routeCode ?? `Route #${trip?.routeId ?? '—'}`,
+      origin: route?.origin,
+      destination: route?.destination,
+      departureTime: trip?.departureTime ?? booking.departureTime,
+    };
+  }), [bookings, passengers, routes, trips]);
 
   // ── Recent bookings: last 5 by id desc ─────────────────────────────────────
   const recentBookings = useMemo(
-    () => [...bookings].sort((a, b) => b.id - a.id).slice(0, 5),
-    [bookings],
+    () => [...joinedBookings].sort((a, b) => b.id - a.id).slice(0, 5),
+    [joinedBookings],
   );
 
   // ── Maintenance alerts (overdue / in_progress) ─────────────────────────────
@@ -188,7 +216,7 @@ const Dashboard: React.FC = () => {
   // ── Route usage: count bookings per routeCode ──────────────────────────────
   const routeUsage = useMemo(() => {
     const counts: Record<string, number> = {};
-    bookings.forEach((b) => {
+    joinedBookings.forEach((b) => {
       if (b.routeCode) {
         counts[b.routeCode] = (counts[b.routeCode] ?? 0) + 1;
       }
@@ -198,7 +226,7 @@ const Dashboard: React.FC = () => {
     return Object.entries(counts)
       .map(([code, count]) => ({ code, count }))
       .sort((a, b) => b.count - a.count);
-  }, [bookings]);
+  }, [joinedBookings]);
 
   // Find max count for bar width normalisation
   const maxRouteCount = routeUsage.length > 0 ? routeUsage[0].count : 1;
@@ -234,6 +262,10 @@ const Dashboard: React.FC = () => {
       <div className="max-w-screen-xl mx-auto px-4 py-6 space-y-8">
         {loading && <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-700">Loading dashboard data…</div>}
         {error && <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">Unable to load dashboard data: {error}</div>}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-gray-600" role="status">Application mode: <strong>{applicationMode === 'oracle' ? 'Oracle' : applicationMode === 'demo' ? 'Demo' : 'Checking'}</strong></p>
+          <button type="button" onClick={() => setReload((current) => current + 1)} disabled={loading} className="inline-flex items-center gap-2 rounded border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"><RefreshCw size={15} />Refresh</button>
+        </div>
         <DatabaseStatusCard />
 
         {/* ── Welcome Banner ── */}
@@ -268,7 +300,7 @@ const Dashboard: React.FC = () => {
           <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-3">
             Overview
           </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <StatCard
               title="Total Vehicles"
               value={stats.totalVehicles}
@@ -277,18 +309,25 @@ const Dashboard: React.FC = () => {
               subtitle={`${vehicles.filter((v) => v.status === 'active').length} currently active`}
             />
             <StatCard
-              title="Active Drivers"
-              value={stats.activeDrivers}
+              title="Total Drivers"
+              value={stats.totalDrivers}
               icon={<Users size={22} />}
               color="green"
-              subtitle={`${drivers.filter((d) => d.status === 'on_trip').length} currently on trip`}
+              subtitle={`${drivers.filter((driver) => driver.status === 'available').length} available`}
             />
             <StatCard
-              title="Upcoming Trips"
-              value={stats.upcomingTrips}
+              title="Total Passengers"
+              value={stats.totalPassengers}
+              icon={<Users size={22} />}
+              color="blue"
+              subtitle="Registered passenger records"
+            />
+            <StatCard
+              title="Total Trips"
+              value={stats.totalTrips}
               icon={<CalendarClock size={22} />}
               color="orange"
-              subtitle="Scheduled & not yet departed"
+              subtitle={`${stats.upcomingTrips} scheduled`}
             />
             <StatCard
               title="Total Bookings"
@@ -299,10 +338,10 @@ const Dashboard: React.FC = () => {
             />
             <StatCard
               title="Total Revenue"
-              value={`LKR ${(stats.totalRevenue / 1000).toFixed(1)}k`}
+              value={stats.totalRevenue === null ? 'Unavailable' : formatCurrency(stats.totalRevenue)}
               icon={<BadgeDollarSign size={22} />}
               color="green"
-              subtitle="From paid payments only"
+              subtitle={stats.totalRevenue === null ? 'Revenue report is unavailable in Oracle mode' : 'From backend revenue report'}
             />
             <StatCard
               title="Maintenance Alerts"
@@ -367,9 +406,9 @@ const Dashboard: React.FC = () => {
                         />
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-gray-800 truncate">
-                            {record.vehicleReg}
+                            {record.vehicleReg ?? vehicles.find((vehicle) => vehicle.id === record.vehicleId)?.registrationNumber ?? `Vehicle #${record.vehicleId}`}
                             <span className="text-gray-400 font-normal ml-1 text-xs">
-                              — {record.vehicleMake}
+                              — {record.vehicleMake ?? (() => { const vehicle = vehicles.find((item) => item.id === record.vehicleId); return vehicle ? `${vehicle.make} ${vehicle.model}` : ''; })()}
                             </span>
                           </p>
                           <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">
@@ -480,7 +519,7 @@ const Dashboard: React.FC = () => {
               bg: '#faf5ff',
             },
           ].map((item) => {
-            const pct = Math.round((item.value / item.of) * 100);
+              const pct = item.of > 0 ? Math.round((item.value / item.of) * 100) : 0;
             return (
               <div
                 key={item.label}

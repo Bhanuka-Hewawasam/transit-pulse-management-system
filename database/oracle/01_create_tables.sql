@@ -389,45 +389,48 @@ CREATE TABLE maintenance_records (
 -- TABLE: FEEDBACK
 -- Post-trip ratings and comments submitted by passengers.
 -- =============================================================================
+-- =============================================================================
+-- TABLE: FEEDBACK (CORRECTED)
+-- Post-trip ratings and comments submitted by passengers.
+-- =============================================================================
 CREATE TABLE feedback (
-    feedback_id     NUMBER          CONSTRAINT pk_feedback PRIMARY KEY,
+    feedback_id         NUMBER          CONSTRAINT pk_feedback PRIMARY KEY,
 
     -- Passenger who submitted this feedback
-    passenger_id    NUMBER          NOT NULL
-                        CONSTRAINT fk_feedback_passenger
-                        REFERENCES passengers (passenger_id),
+    passenger_id        NUMBER          NOT NULL
+                            CONSTRAINT fk_feedback_passenger
+                            REFERENCES passengers (passenger_id),
 
     -- Trip the feedback relates to
-    trip_id         NUMBER          NOT NULL
-                        CONSTRAINT fk_feedback_trip
-                        REFERENCES trips (trip_id),
+    trip_id             NUMBER          NOT NULL
+                            CONSTRAINT fk_feedback_trip
+                            REFERENCES trips (trip_id),
 
     -- Driver being rated
-    driver_id       NUMBER          NOT NULL
-                        CONSTRAINT fk_feedback_driver
-                        REFERENCES drivers (driver_id),
+    driver_id           NUMBER          NOT NULL
+                            CONSTRAINT fk_feedback_driver
+                            REFERENCES drivers (driver_id),
 
     -- Vehicle being rated
-    vehicle_id      NUMBER          NOT NULL
-                        CONSTRAINT fk_feedback_vehicle
-                        REFERENCES vehicles (vehicle_id),
+    vehicle_id          NUMBER          NOT NULL
+                            CONSTRAINT fk_feedback_vehicle
+                            REFERENCES vehicles (vehicle_id),
 
     -- Star rating from 1 (poor) to 5 (excellent)
-    rating          NUMBER(1)       NOT NULL
-                        CONSTRAINT ck_feedback_rating CHECK (rating BETWEEN 1 AND 5),
+    rating              NUMBER(1)       NOT NULL
+                            CONSTRAINT ck_feedback_rating CHECK (rating BETWEEN 1 AND 5),
 
-    -- Optional free-text comment
-    comment         VARCHAR2(1000),
+    -- Optional free-text comment (renamed from reserved word 'comment')
+    feedback_comment    VARCHAR2(1000),
 
     -- Date the feedback was submitted
-    feedback_date   DATE            DEFAULT SYSDATE,
+    feedback_date       DATE            DEFAULT SYSDATE,
 
     -- Topic category of the feedback
-    category        VARCHAR2(20)
-                        CONSTRAINT ck_feedback_category
-                        CHECK (category IN ('service', 'driver', 'vehicle', 'punctuality', 'general'))
+    category            VARCHAR2(20)
+                            CONSTRAINT ck_feedback_category
+                            CHECK (category IN ('service', 'driver', 'vehicle', 'punctuality', 'general'))
 );
-
 PROMPT ============================================================
 PROMPT  All SmartMove tables created successfully.
 PROMPT  Next step: Run 02_constraints_indexes.sql

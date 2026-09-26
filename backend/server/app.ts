@@ -3,7 +3,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { database, nextId } from './database.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, Route, Vehicle } from '../../src/types/index.js';
 import { mongodbContent, mongodbHealth } from './mongodbAdapter.js';
-import { oracleHealth, oracleList } from './oracleAdapter.js';
+import { oracleCreate, oracleHealth, oracleList, oracleUpdateTripStatus } from './oracleAdapter.js';
 
 const app = express();
 app.use(cors());
@@ -16,14 +16,10 @@ const required = (body: Record<string, unknown>, fields: string[]): string | nul
 
 const list = (name: keyof typeof database) => async (_request: Request, response: Response) => {
   if (process.env.DATABASE_MODE === 'oracle') {
-    try {
-      const health = await oracleHealth();
-      if (health.connected) return response.json(await oracleList(name));
-    } catch {
-      // Fall through to the demo adapter when Oracle is unavailable.
-    }
+    return response.json(await oracleList(name));
   }
-  return response.json(database[name]);
+  if (process.env.DATABASE_MODE === 'demo') return response.json(database[name]);
+  return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using data endpoints.' });
 };
 app.get('/api/vehicles', list('vehicles'));
 app.get('/api/drivers', list('drivers'));
@@ -43,20 +39,43 @@ const demoMongoContent = () => ({
 });
 app.get('/api/health/oracle', async (_request, response) => response.json(await oracleHealth()));
 app.get('/api/health/mongodb', async (_request, response) => response.json(await mongodbHealth()));
-app.get('/api/health/databases', async (_request, response) => response.json({ oracle: await oracleHealth(), mongodb: await mongodbHealth() }));
+app.get('/api/health/databases', async (_request, response) => response.json({
+  mode: process.env.DATABASE_MODE === 'oracle' ? 'oracle' : 'demo',
+  oracle: await oracleHealth(),
+  mongodb: await mongodbHealth(),
+}));
 app.get('/api/mongodb/content', async (_request, response) => {
   const health = await mongodbHealth();
   if (health.connected) return response.json({ demo: false, ...(await mongodbContent()) });
-  return response.json(demoMongoContent());
+  if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent());
+  return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
 });
-app.get('/api/mongodb/reviews', async (_request, response) => response.json((await mongodbHealth()).connected ? (await mongodbContent()).reviews : database.feedback));
+app.get('/api/mongodb/reviews', async (_request, response) => {
+  if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).reviews);
+  if (process.env.DATABASE_MODE === 'demo') return response.json(database.feedback);
+  return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+});
 app.get('/api/mongodb/reviews/route/:routeId', async (request, response) => {
-  const content = (await mongodbHealth()).connected ? (await mongodbContent()).reviews : database.feedback;
+  const health = await mongodbHealth();
+  if (!health.connected && process.env.DATABASE_MODE !== 'demo') return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+  const content = health.connected ? (await mongodbContent()).reviews : database.feedback;
   response.json(content.filter((review) => String((review as { routeCode?: unknown }).routeCode) === request.params.routeId));
 });
-app.get('/api/mongodb/announcements', async (_request, response) => response.json((await mongodbHealth()).connected ? (await mongodbContent()).announcements : demoMongoContent().announcements));
-app.get('/api/mongodb/documents', async (_request, response) => response.json((await mongodbHealth()).connected ? (await mongodbContent()).documents : demoMongoContent().documents));
-app.get('/api/mongodb/media', async (_request, response) => response.json((await mongodbHealth()).connected ? (await mongodbContent()).media : demoMongoContent().media));
+app.get('/api/mongodb/announcements', async (_request, response) => {
+  if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).announcements);
+  if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent().announcements);
+  return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+});
+app.get('/api/mongodb/documents', async (_request, response) => {
+  if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).documents);
+  if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent().documents);
+  return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+});
+app.get('/api/mongodb/media', async (_request, response) => {
+  if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).media);
+  if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent().media);
+  return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+});
 
 function create<T extends { id: number }>(collection: T[], body: Record<string, unknown>, fields: string[], transform: (id: number) => T): void | never {
   const error = required(body, fields);
@@ -64,34 +83,49 @@ function create<T extends { id: number }>(collection: T[], body: Record<string, 
   collection.push(transform(nextId(collection)));
 }
 
-app.post('/api/vehicles', (request, response, next) => {
-  try { create(database.vehicles, request.body, ['registrationNumber', 'make', 'model'], (id) => ({ id, ...request.body } as Vehicle)); response.status(201).json(database.vehicles.at(-1)); } catch (error) { next(error); }
-});
-app.post('/api/drivers', (request, response, next) => {
-  try { create(database.drivers, request.body, ['firstName', 'lastName', 'licenseNumber'], (id) => ({ id, ...request.body } as Driver)); response.status(201).json(database.drivers.at(-1)); } catch (error) { next(error); }
-});
-app.post('/api/routes', (request, response, next) => {
-  try { create(database.routes, request.body, ['routeCode', 'origin', 'destination'], (id) => ({ id, ...request.body } as Route)); response.status(201).json(database.routes.at(-1)); } catch (error) { next(error); }
-});
-app.post('/api/passengers', (request, response, next) => {
-  try { create(database.passengers, request.body, ['firstName', 'lastName', 'email'], (id) => ({ id, ...request.body } as Passenger)); response.status(201).json(database.passengers.at(-1)); } catch (error) { next(error); }
-});
-app.post('/api/bookings', (request, response, next) => {
-  try { create(database.bookings, request.body, ['tripId', 'passengerId', 'seatNumber'], (id) => ({ id, ...request.body } as Booking)); response.status(201).json(database.bookings.at(-1)); } catch (error) { next(error); }
-});
-app.post('/api/payments', (request, response, next) => {
-  try { create(database.payments, request.body, ['bookingId', 'amount', 'method'], (id) => ({ id, ...request.body } as Payment)); response.status(201).json(database.payments.at(-1)); } catch (error) { next(error); }
-});
-app.post('/api/feedback', (request, response, next) => {
-  try { create(database.feedback, request.body, ['passengerId', 'tripId', 'rating', 'comment'], (id) => ({ id, ...request.body } as Feedback)); response.status(201).json(database.feedback.at(-1)); } catch (error) { next(error); }
-});
-app.patch('/api/trips/:id/status', (request, response) => {
+const createEndpoint = <T extends { id: number }>(resource: keyof typeof database, collection: T[], fields: string[], transform: (id: number, body: Record<string, unknown>) => T) => async (request: Request, response: Response, next: NextFunction) => {
+  try {
+    if (process.env.DATABASE_MODE === 'oracle') {
+      const error = required(request.body, fields);
+      if (error) return response.status(400).json({ error });
+      return response.status(201).json(await oracleCreate(resource, request.body));
+    }
+    if (process.env.DATABASE_MODE !== 'demo') return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using data endpoints.' });
+    create(collection, request.body, fields, (id) => transform(id, request.body));
+    return response.status(201).json(collection.at(-1));
+  } catch (error) { return next(error); }
+};
+
+app.post('/api/vehicles', createEndpoint('vehicles', database.vehicles, ['registrationNumber', 'make', 'model'], (id, body) => ({ id, ...body } as Vehicle)));
+app.post('/api/drivers', createEndpoint('drivers', database.drivers, ['firstName', 'lastName', 'licenseNumber', 'licenseExpiry'], (id, body) => ({ id, ...body } as Driver)));
+app.post('/api/routes', createEndpoint('routes', database.routes, ['routeCode', 'origin', 'destination', 'distanceKm', 'estimatedMinutes', 'fareAmount'], (id, body) => ({ id, ...body, stops: body.stops ?? [], isActive: body.isActive !== false } as Route)));
+app.post('/api/passengers', createEndpoint('passengers', database.passengers, ['firstName', 'lastName', 'email', 'passportOrNic'], (id, body) => ({ id, ...body } as Passenger)));
+app.post('/api/trips', createEndpoint('trips', database.trips, ['routeId', 'vehicleId', 'driverId', 'departureTime', 'arrivalTime', 'availableSeats', 'totalSeats'], (id, body) => ({ id, ...body } as unknown as typeof database.trips[number])));
+app.post('/api/bookings', createEndpoint('bookings', database.bookings, ['tripId', 'passengerId', 'seatNumber', 'amount'], (id, body) => ({ id, ...body } as Booking)));
+app.post('/api/payments', createEndpoint('payments', database.payments, ['bookingId', 'amount', 'method'], (id, body) => ({ id, ...body } as Payment)));
+app.post('/api/maintenance', createEndpoint('maintenance', database.maintenance, ['vehicleId', 'description', 'scheduledDate'], (id, body) => ({ id, ...body } as typeof database.maintenance[number])));
+app.post('/api/feedback', createEndpoint('feedback', database.feedback, ['passengerId', 'tripId', 'driverId', 'vehicleId', 'rating', 'comment'], (id, body) => ({ id, ...body } as Feedback)));
+
+app.patch('/api/trips/:id/status', async (request, response, next) => {
   const trip = database.trips.find((item) => item.id === Number(request.params.id));
   const allowed = ['scheduled', 'in_progress', 'completed', 'cancelled'];
-  if (!trip) return response.status(404).json({ error: 'Trip not found' });
   if (!allowed.includes(request.body.status)) return response.status(400).json({ error: 'Invalid trip status' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    try {
+      const updated = await oracleUpdateTripStatus(Number(request.params.id), request.body.status);
+      return updated ? response.json(updated) : response.status(404).json({ error: 'Trip not found' });
+    } catch (error) { return next(error); }
+  }
+  if (process.env.DATABASE_MODE !== 'demo') return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using data endpoints.' });
+  if (!trip) return response.status(404).json({ error: 'Trip not found' });
   trip.status = request.body.status;
   return response.json(trip);
+});
+
+app.use('/api/reports', (_request, response, next) => {
+  if (process.env.DATABASE_MODE === 'demo') return next();
+  if (process.env.DATABASE_MODE === 'oracle') return response.status(501).json({ error: 'Reports are not yet implemented for Oracle mode.' });
+  return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using data endpoints.' });
 });
 
 app.get('/api/reports/most-used-routes', (_request, response) => {
@@ -116,6 +150,18 @@ app.get('/api/reports/maintenance-due', (_request, response) => response.json(da
 app.get('/api/reports/performance', (_request, response) => response.json(database.drivers.map((driver) => ({ driver, feedbackCount: database.feedback.filter((item) => item.driverId === driver.id).length })).sort((a, b) => b.driver.rating - a.driver.rating)));
 
 app.use((_request, response) => response.status(404).json({ error: 'Endpoint not found' }));
-app.use((error: Error & { statusCode?: number }, _request: Request, response: Response, _next: NextFunction) => response.status(error.statusCode ?? 500).json({ error: error.message || 'Internal server error' }));
+app.use((error: Error & { statusCode?: number; errorNum?: number; code?: string }, _request: Request, response: Response, _next: NextFunction) => {
+  const oracleCode = error.code?.match(/ORA-(\d{5})/)?.[1] ?? String(error.errorNum ?? '');
+  if (oracleCode === '00001') return response.status(409).json({ error: 'A record with one of these unique values already exists.' });
+  if (oracleCode === '02291') return response.status(400).json({ error: 'A referenced record does not exist. Check the supplied foreign-key IDs.' });
+  if (oracleCode === '02292') return response.status(409).json({ error: 'This record is still referenced by another record.' });
+  if (oracleCode === '00942') return response.status(500).json({ error: 'An Oracle table is missing. Run database/oracle/01_create_tables.sql as SYSTEM.' });
+  if (oracleCode === '02289') return response.status(500).json({ error: 'An Oracle sequence is missing. Run database/oracle/03_sequences.sql as SYSTEM.' });
+  if (oracleCode === '01017') return response.status(503).json({ error: 'Oracle login failed. Check ORACLE_USER and ORACLE_PASSWORD in the backend environment.' });
+  if (/^(12154|12514|12541|12170|03113|03114|12545)$/.test(oracleCode) || error.code?.startsWith('NJS-') || error.code?.startsWith('DPI-') || error.message.includes('Oracle credentials are not configured')) {
+    return response.status(503).json({ error: 'Oracle is unavailable. Check the backend connection settings and database service.' });
+  }
+  return response.status(error.statusCode ?? 500).json({ error: error.message || 'Internal server error' });
+});
 
 export default app;

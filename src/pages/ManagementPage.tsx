@@ -1,6 +1,22 @@
+// ============================================================
+// SmartMove Transport Solutions
+// File: src/pages/ManagementPage.tsx
+//
+// Generic management page for entity administration (Vehicles,
+// Drivers, Passengers, Trips, Bookings, Payments, Maintenance, Feedback).
+// Features:
+//  - Consistent header with title, description, and primary "Add" action
+//  - Search bar & sticky-header data table with zebra rows & status badges
+//  - Responsive mobile cards view with action buttons
+//  - Modal form dialog with real-time field validation & loading states
+//  - Floating success/error toast notifications
+// ============================================================
+
 import React, { useEffect, useMemo, useState } from 'react';
+import { Inbox, Pencil, Plus, CheckCircle2, AlertCircle, X, Search } from 'lucide-react';
 import DataTable from '../components/DataTable';
 import SearchBar from '../components/SearchBar';
+import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
 import type { Column } from '../components/DataTable';
 import { ApiError, apiEndpoints, apiGet, apiPatch, apiPost } from '../services/api';
@@ -57,52 +73,89 @@ const pageMeta: Record<string, { title: string; description: string }> = {
 
 const columnsFor: Record<string, Column<RecordRow>[]> = {
   vehicles: [
-    { key: 'registration', label: 'Registration' }, { key: 'vehicle', label: 'Vehicle' }, { key: 'type', label: 'Type' },
-    { key: 'capacity', label: 'Seats' }, { key: 'fuel', label: 'Fuel' }, { key: 'nextMaintenance', label: 'Next maintenance' },
+    { key: 'registration', label: 'Registration' },
+    { key: 'vehicle', label: 'Vehicle' },
+    { key: 'type', label: 'Type' },
+    { key: 'capacity', label: 'Seats' },
+    { key: 'fuel', label: 'Fuel' },
+    { key: 'nextMaintenance', label: 'Next maintenance' },
     { key: 'status', label: 'Status', render: (row) => <StatusBadge status={text(row.status)} type="vehicle" /> },
   ],
   drivers: [
-    { key: 'name', label: 'Driver' }, { key: 'license', label: 'Licence' }, { key: 'expiry', label: 'Licence expiry' },
-    { key: 'phone', label: 'Phone' }, { key: 'trips', label: 'Trips' }, { key: 'rating', label: 'Rating' },
+    { key: 'name', label: 'Driver' },
+    { key: 'license', label: 'Licence' },
+    { key: 'expiry', label: 'Licence expiry' },
+    { key: 'phone', label: 'Phone' },
+    { key: 'trips', label: 'Trips' },
+    { key: 'rating', label: 'Rating' },
     { key: 'status', label: 'Status', render: (row) => <StatusBadge status={text(row.status)} type="driver" /> },
   ],
   passengers: [
-    { key: 'name', label: 'Passenger' }, { key: 'email', label: 'Email' }, { key: 'phone', label: 'Phone' },
-    { key: 'registered', label: 'Registered' }, { key: 'bookings', label: 'Bookings' }, { key: 'identity', label: 'NIC / Passport' },
+    { key: 'name', label: 'Passenger' },
+    { key: 'email', label: 'Email' },
+    { key: 'phone', label: 'Phone' },
+    { key: 'registered', label: 'Registered' },
+    { key: 'bookings', label: 'Bookings' },
+    { key: 'identity', label: 'NIC / Passport' },
   ],
   trips: [
-    { key: 'route', label: 'Route' }, { key: 'departure', label: 'Departure' }, { key: 'vehicle', label: 'Vehicle' },
-    { key: 'driver', label: 'Driver' }, { key: 'seats', label: 'Seats available / total' },
+    { key: 'route', label: 'Route' },
+    { key: 'departure', label: 'Departure' },
+    { key: 'vehicle', label: 'Vehicle' },
+    { key: 'driver', label: 'Driver' },
+    { key: 'seats', label: 'Seats available / total' },
     { key: 'status', label: 'Status', render: (row) => <StatusBadge status={text(row.status)} type="trip" /> },
   ],
   bookings: [
-    { key: 'id', label: 'Booking' }, { key: 'passenger', label: 'Passenger' }, { key: 'route', label: 'Route' },
-    { key: 'seat', label: 'Seat' }, { key: 'date', label: 'Date' }, { key: 'amount', label: 'Amount' },
+    { key: 'id', label: 'Booking' },
+    { key: 'passenger', label: 'Passenger' },
+    { key: 'route', label: 'Route' },
+    { key: 'seat', label: 'Seat' },
+    { key: 'date', label: 'Date' },
+    { key: 'amount', label: 'Amount' },
     { key: 'status', label: 'Status', render: (row) => <StatusBadge status={text(row.status)} type="booking" /> },
   ],
   payments: [
-    { key: 'reference', label: 'Transaction' }, { key: 'passenger', label: 'Passenger' }, { key: 'route', label: 'Route' },
-    { key: 'date', label: 'Date' }, { key: 'method', label: 'Method' }, { key: 'amount', label: 'Amount' },
+    { key: 'reference', label: 'Transaction' },
+    { key: 'passenger', label: 'Passenger' },
+    { key: 'route', label: 'Route' },
+    { key: 'date', label: 'Date' },
+    { key: 'method', label: 'Method' },
+    { key: 'amount', label: 'Amount' },
     { key: 'status', label: 'Status', render: (row) => <StatusBadge status={text(row.status)} type="payment" /> },
   ],
   maintenance: [
-    { key: 'vehicle', label: 'Vehicle' }, { key: 'type', label: 'Type' }, { key: 'description', label: 'Description' },
-    { key: 'scheduled', label: 'Scheduled' }, { key: 'cost', label: 'Cost' }, { key: 'technician', label: 'Technician' },
+    { key: 'vehicle', label: 'Vehicle' },
+    { key: 'type', label: 'Type' },
+    { key: 'description', label: 'Description' },
+    { key: 'scheduled', label: 'Scheduled' },
+    { key: 'cost', label: 'Cost' },
+    { key: 'technician', label: 'Technician' },
     { key: 'status', label: 'Status', render: (row) => <StatusBadge status={text(row.status)} type="maintenance" /> },
   ],
   feedback: [
-    { key: 'passenger', label: 'Passenger' }, { key: 'route', label: 'Route' }, { key: 'driver', label: 'Driver' },
-    { key: 'vehicle', label: 'Vehicle' }, { key: 'rating', label: 'Rating' }, { key: 'category', label: 'Category' },
-    { key: 'comment', label: 'Comment' }, { key: 'date', label: 'Date' },
+    { key: 'passenger', label: 'Passenger' },
+    { key: 'route', label: 'Route' },
+    { key: 'driver', label: 'Driver' },
+    { key: 'vehicle', label: 'Vehicle' },
+    { key: 'rating', label: 'Rating' },
+    { key: 'category', label: 'Category' },
+    { key: 'comment', label: 'Comment' },
+    { key: 'date', label: 'Date' },
   ],
 };
 
 const selectOptions: Record<string, string[]> = {
-  type: ['bus', 'van', 'minibus'], fuelType: ['diesel', 'petrol', 'electric'],
-  vehicleStatus: ['active', 'maintenance', 'inactive'], driverStatus: ['available', 'on_trip', 'off_duty', 'suspended'],
-  tripStatus: ['scheduled', 'in_progress', 'completed', 'cancelled'], bookingStatus: ['confirmed', 'cancelled', 'pending', 'completed'],
-  paymentMethod: ['card', 'cash', 'online', 'bank_transfer'], paymentStatus: ['paid', 'pending', 'failed', 'refunded'],
-  maintenanceType: ['routine', 'repair', 'inspection', 'emergency'], maintenanceStatus: ['scheduled', 'in_progress', 'completed', 'overdue'],
+  type: ['bus', 'van', 'minibus'],
+  fuelType: ['diesel', 'petrol', 'electric'],
+  vehicleStatus: ['active', 'maintenance', 'inactive'],
+  driverStatus: ['available', 'on_trip', 'off_duty', 'suspended'],
+  tripStatus: ['scheduled', 'in_progress', 'completed', 'cancelled'],
+  bookingStatus: ['confirmed', 'cancelled', 'pending', 'completed'],
+  paymentMethod: ['card', 'cash', 'online', 'bank_transfer'],
+  paymentStatus: ['paid', 'pending', 'failed', 'refunded'],
+  maintenanceType: ['routine', 'repair', 'inspection', 'emergency'],
+  maintenanceStatus: ['scheduled', 'in_progress', 'completed', 'overdue'],
   feedbackCategory: ['service', 'driver', 'vehicle', 'punctuality', 'general'],
 };
 
@@ -120,18 +173,24 @@ const forms: Record<string, FieldSpec[]> = {
     { name: 'nextMaintenanceDate', label: 'Next maintenance date', type: 'date', optional: true },
   ],
   drivers: [
-    { name: 'firstName', label: 'First name', type: 'text', required: true }, { name: 'lastName', label: 'Last name', type: 'text', required: true },
-    { name: 'licenseNumber', label: 'Licence number', type: 'text', required: true }, { name: 'licenseExpiry', label: 'Licence expiry', type: 'date', required: true },
-    { name: 'phone', label: 'Phone', type: 'text', optional: true }, { name: 'email', label: 'Email', type: 'email', optional: true },
+    { name: 'firstName', label: 'First name', type: 'text', required: true },
+    { name: 'lastName', label: 'Last name', type: 'text', required: true },
+    { name: 'licenseNumber', label: 'Licence number', type: 'text', required: true },
+    { name: 'licenseExpiry', label: 'Licence expiry', type: 'date', required: true },
+    { name: 'phone', label: 'Phone', type: 'text', optional: true },
+    { name: 'email', label: 'Email', type: 'email', optional: true },
     { name: 'status', label: 'Status', type: 'select', defaultValue: 'available', options: selectOptions.driverStatus },
     { name: 'joinedDate', label: 'Joined date', type: 'date', optional: true },
     { name: 'totalTrips', label: 'Total trips', type: 'number', optional: true, min: 0, step: 1 },
     { name: 'rating', label: 'Rating', type: 'number', optional: true, min: 0, max: 5, step: 0.01 },
   ],
   passengers: [
-    { name: 'firstName', label: 'First name', type: 'text', required: true }, { name: 'lastName', label: 'Last name', type: 'text', required: true },
-    { name: 'email', label: 'Email', type: 'email', required: true }, { name: 'phone', label: 'Phone', type: 'text', optional: true },
-    { name: 'address', label: 'Address', type: 'text', optional: true }, { name: 'passportOrNic', label: 'Passport or NIC', type: 'text', required: true },
+    { name: 'firstName', label: 'First name', type: 'text', required: true },
+    { name: 'lastName', label: 'Last name', type: 'text', required: true },
+    { name: 'email', label: 'Email', type: 'email', required: true },
+    { name: 'phone', label: 'Phone', type: 'text', optional: true },
+    { name: 'address', label: 'Address', type: 'text', optional: true },
+    { name: 'passportOrNic', label: 'Passport or NIC', type: 'text', required: true },
   ],
   trips: [
     { name: 'routeId', label: 'Route', type: 'select', lookup: 'routes', required: true },
@@ -182,8 +241,10 @@ const forms: Record<string, FieldSpec[]> = {
 };
 
 const lookupResources: Record<string, EntityName[]> = {
-  trips: ['routes', 'vehicles', 'drivers'], bookings: ['trips', 'passengers', 'routes'],
-  payments: ['bookings', 'trips', 'passengers', 'routes'], maintenance: ['vehicles'],
+  trips: ['routes', 'vehicles', 'drivers'],
+  bookings: ['trips', 'passengers', 'routes'],
+  payments: ['bookings', 'trips', 'passengers', 'routes'],
+  maintenance: ['vehicles'],
   feedback: ['passengers', 'trips', 'routes', 'drivers', 'vehicles'],
 };
 
@@ -279,11 +340,12 @@ function makePayload(page: string, form: Record<string, string>): Record<string,
   return payload;
 }
 
-const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
+const ManagementPage: React.FC<{ page: string; searchValue?: string; onSearchValueChange?: (value: string) => void }> = ({ page, searchValue, onSearchValueChange }) => {
   const meta = pageMeta[page];
-  const [search, setSearch] = useState('');
+  const [localSearch, setLocalSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
   const [records, setRecords] = useState<RecordRow[]>([]);
   const [rawRecords, setRawRecords] = useState<Record<string, unknown>[]>([]);
   const [editingRecord, setEditingRecord] = useState<Record<string, unknown> | null>(null);
@@ -294,6 +356,9 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
   const [success, setSuccess] = useState('');
   const [form, setForm] = useState<Record<string, string>>({});
   const specs = forms[page] ?? [];
+  const search = searchValue ?? localSearch;
+  const changeSearch = onSearchValueChange ?? setLocalSearch;
+
   const recordLabel = ({
     vehicles: 'Vehicle', drivers: 'Driver', passengers: 'Passenger', trips: 'Trip', bookings: 'Booking',
     payments: 'Payment', maintenance: 'Maintenance record', feedback: 'Feedback',
@@ -322,6 +387,16 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
     setFieldErrors({});
     setFormError(null);
     setSuccess('');
+    setFormOpen(true);
+  };
+
+  const addRecord = () => {
+    setEditingRecord(null);
+    setForm({});
+    setFieldErrors({});
+    setFormError(null);
+    setSuccess('');
+    setFormOpen(true);
   };
 
   const createRecord = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -351,6 +426,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
       setForm({});
       setEditingRecord(null);
       setFieldErrors({});
+      setFormOpen(false);
       setSuccess(`${recordLabel} ${editingRecord ? 'updated' : 'saved'} to the backend.`);
       try {
         const refreshed = await loadPage(page);
@@ -372,6 +448,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
     const query = search.trim().toLowerCase();
     return records.filter((row) => !query || Object.values(row).some((value) => text(value).toLowerCase().includes(query)));
   }, [records, search]);
+
   const columns: Column<RecordRow>[] = [
     ...(columnsFor[page] ?? []),
     {
@@ -382,74 +459,264 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
           type="button"
           aria-label={`Edit ${recordLabel} #${row.id}`}
           onClick={() => editRecord(Number(row.id))}
-          className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-gray-700 shadow-2xs transition-all hover:border-blue-300 hover:bg-blue-50 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-1 cursor-pointer"
         >
-          Edit
+          <Pencil size={13} className="text-blue-700 shrink-0" /> Edit
         </button>
       ),
     },
   ];
 
-  if (!meta) return <p role="alert" className="rounded-lg bg-amber-50 p-4 text-sm text-amber-800">This module has no management page.</p>;
+  const mobileColumns = columns.filter((column) => column.key !== 'id' && column.key !== 'actions');
+  const renderCell = (column: Column<RecordRow>, row: RecordRow) => column.render
+    ? column.render(row)
+    : String(row[String(column.key)] ?? '—');
+
+  if (!meta) return <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-900 shadow-2xs">This module has no management page.</p>;
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">{meta.title}</h2>
-        <p className="mt-1 text-sm text-gray-500">{meta.description}</p>
-      </div>
-      <SearchBar value={search} onChange={setSearch} placeholder={`Search ${meta.title.toLowerCase()}…`} className="max-w-md" />
-      <form onSubmit={createRecord} noValidate className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-800">{editingRecord ? `Edit ${recordLabel} #${editingRecord.id}` : `Add ${recordLabel}`}</h3>
-          <span className="text-xs text-gray-500">Saved through the backend API</span>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {specs.map((field) => {
-            const value = form[field.name] ?? field.defaultValue ?? '';
-            const inputClass = 'w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100';
-            const options = field.lookup ? lookups[field.lookup] ?? [] : [];
-            const fieldError = fieldErrors[field.name];
-            const setValue = (nextValue: string) => {
-              setForm((previous) => ({ ...previous, [field.name]: nextValue }));
-              setFormError(null);
-              setFieldErrors((previous) => {
-                const next = { ...previous };
-                delete next[field.name];
-                return next;
-              });
-              setSuccess('');
-            };
-            return (
-              <label key={field.name} className={`block space-y-1 text-sm font-medium text-gray-700 ${field.type === 'textarea' ? 'sm:col-span-2 lg:col-span-3' : ''}`}>
-                <span>{field.label}{field.required ? ' *' : field.optional ? ' (optional)' : ''}</span>
-                {field.type === 'select' ? (
-                  <select aria-label={field.label} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `${field.name}-error` : undefined} value={value} required={field.required} onChange={(event) => setValue(event.target.value)} className={inputClass}>
-                    <option value="">{field.lookup ? `Select ${field.label.toLowerCase()}` : `Select ${field.label.toLowerCase()}`}</option>
-                    {field.options?.map((option) => <option key={option} value={option}>{option.replaceAll('_', ' ')}</option>)}
-                    {options.map((option) => <option key={String(option.id)} value={String(option.id)}>{field.lookup === 'routes' ? routeLabel(option) : field.lookup === 'vehicles' ? `${text(option.registrationNumber)} · ${text(option.make)} ${text(option.model)}` : field.lookup === 'drivers' || field.lookup === 'passengers' ? fullName(option) : field.lookup === 'trips' ? `${text(option.id)} · ${text(option.routeCode ?? option.routeId)} · ${displayDate(option.departureTime)}` : field.lookup === 'bookings' ? `Booking #${text(option.id)} · ${text(option.seatNumber)}` : text(option.id)}</option>)}
-                  </select>
-                ) : field.type === 'textarea' ? (
-                  <textarea aria-label={field.label} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `${field.name}-error` : undefined} value={value} required={field.required} rows={3} onChange={(event) => setValue(event.target.value)} className={inputClass} />
-                ) : (
-                  <input aria-label={field.label} aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? `${field.name}-error` : undefined} type={field.type} value={value} required={field.required} min={field.min} max={field.max} step={field.step} onChange={(event) => setValue(event.target.value)} className={inputClass} />
-                )}
-                {fieldError && <span id={`${field.name}-error`} className="block text-xs text-red-700">{fieldError}</span>}
-              </label>
-            );
-          })}
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button type="submit" disabled={saving} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">
-            {saving ? 'Saving…' : `${editingRecord ? 'Save' : 'Add'} ${recordLabel}`}
+    <div className="space-y-6">
+      {/* ── Toast Success Notification ── */}
+      {success && (
+        <div role="status" className="fixed right-4 top-20 z-50 flex max-w-md items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-xl backdrop-blur-md transition-all sm:right-6">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+            <div>
+              <span className="font-bold">Saved! </span>
+              <span>{success}</span>
+            </div>
+          </div>
+          <button type="button" aria-label="Dismiss toast" onClick={() => setSuccess('')} className="rounded-lg p-1 text-emerald-700 hover:bg-emerald-100 transition-colors">
+            <X size={16} />
           </button>
-          {editingRecord && <button type="button" onClick={() => { setEditingRecord(null); setForm({}); setFieldErrors({}); setFormError(null); }} className="rounded border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100">Cancel edit</button>}
-          {success && <span role="status" className="text-sm text-emerald-700">{success}</span>}
         </div>
-        {formError && <div role="alert" className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><p>{formError.message}</p>{formError instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{formError.technicalMessage}</code></details>}</div>}
-      </form>
-      {error && <div role="alert" className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-800"><p>Unable to load {meta.title.toLowerCase()}: {error.message}</p>{error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}</div>}
-      <DataTable<RecordRow> columns={columns} data={rows} loading={loading} emptyMessage={search ? `No ${meta.title.toLowerCase()} match your search.` : 'No records exist in the connected database.'} />
+      )}
+
+      {/* ── Page Header Bar ── */}
+      <div className="flex flex-col gap-4 border-b border-gray-200 pb-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-800">
+            SmartMove Fleet Management
+          </div>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">{meta.title}</h1>
+          <p className="mt-1 text-sm text-gray-600 font-medium">{meta.description}</p>
+        </div>
+        <button
+          type="button"
+          onClick={addRecord}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-blue-800 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 shrink-0 cursor-pointer"
+          style={{ backgroundColor: '#1a5fb4' }}
+        >
+          <Plus size={18} className="stroke-[2.5]" />
+          Add {recordLabel}
+        </button>
+      </div>
+
+      {/* ── Requirement 2: Search & Filter Bar ── */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {onSearchValueChange === undefined && (
+          <SearchBar
+            value={search}
+            onChange={changeSearch}
+            placeholder={`Search ${meta.title.toLowerCase()} by key attributes…`}
+            className="max-w-md"
+          />
+        )}
+        <div className="text-xs font-medium text-gray-500">
+          Showing <span className="font-bold text-gray-800">{rows.length}</span> of {records.length} records
+        </div>
+      </div>
+
+      {/* ── Error Banner ── */}
+      {error && (
+        <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 shadow-2xs">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle size={18} className="text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Unable to load {meta.title.toLowerCase()}: {error.message}</p>
+              {error instanceof ApiError && (
+                <details className="mt-1 text-xs font-mono text-rose-700">
+                  <summary className="cursor-pointer font-sans font-medium hover:underline">Technical detail</summary>
+                  <code className="block mt-1 p-2 rounded bg-rose-100/60">{error.technicalMessage}</code>
+                </details>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Form Modal Dialog ── */}
+      <Modal
+        isOpen={formOpen}
+        onClose={() => { if (!saving) { setFormOpen(false); setEditingRecord(null); setFormError(null); } }}
+        title={editingRecord ? `Edit ${recordLabel} #${editingRecord.id}` : `Add ${recordLabel}`}
+        size="lg"
+      >
+        <form onSubmit={createRecord} noValidate className="space-y-5">
+          <div className="mb-2 flex items-center justify-between border-b border-gray-100 pb-2">
+            <p className="text-xs font-medium text-gray-500">Fields marked <span className="text-rose-600 font-bold">*</span> are required.</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {specs.map((field) => {
+              const value = form[field.name] ?? field.defaultValue ?? '';
+              const inputClass = `w-full rounded-xl border ${fieldErrors[field.name] ? 'border-rose-400 bg-rose-50/20' : 'border-gray-300 bg-white'} px-3.5 py-2.5 text-sm text-gray-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100 transition-colors shadow-2xs`;
+              const options = field.lookup ? lookups[field.lookup] ?? [] : [];
+              const fieldError = fieldErrors[field.name];
+
+              const setValue = (nextValue: string) => {
+                setForm((previous) => ({ ...previous, [field.name]: nextValue }));
+                setFormError(null);
+                setFieldErrors((previous) => {
+                  const next = { ...previous };
+                  delete next[field.name];
+                  return next;
+                });
+                setSuccess('');
+              };
+
+              return (
+                <label key={field.name} className={`block space-y-1.5 text-xs font-semibold text-gray-700 ${field.type === 'textarea' ? 'sm:col-span-2 lg:col-span-3' : ''}`}>
+                  <span className="flex items-center gap-1">
+                    {field.label}
+                    {field.required && <span className="text-rose-600 font-bold">*</span>}
+                    {field.optional && <span className="text-gray-400 font-normal">(optional)</span>}
+                  </span>
+                  {field.type === 'select' ? (
+                    <select
+                      aria-label={field.label}
+                      aria-invalid={Boolean(fieldError)}
+                      aria-describedby={fieldError ? `${field.name}-error` : undefined}
+                      value={value}
+                      required={field.required}
+                      onChange={(event) => setValue(event.target.value)}
+                      className={inputClass}
+                    >
+                      <option value="">{`Select ${field.label.toLowerCase()}`}</option>
+                      {field.options?.map((option) => <option key={option} value={option}>{option.replaceAll('_', ' ')}</option>)}
+                      {options.map((option) => (
+                        <option key={String(option.id)} value={String(option.id)}>
+                          {field.lookup === 'routes' ? routeLabel(option)
+                            : field.lookup === 'vehicles' ? `${text(option.registrationNumber)} · ${text(option.make)} ${text(option.model)}`
+                            : field.lookup === 'drivers' || field.lookup === 'passengers' ? fullName(option)
+                            : field.lookup === 'trips' ? `${text(option.id)} · ${text(option.routeCode ?? option.routeId)} · ${displayDate(option.departureTime)}`
+                            : field.lookup === 'bookings' ? `Booking #${text(option.id)} · ${text(option.seatNumber)}`
+                            : text(option.id)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : field.type === 'textarea' ? (
+                    <textarea
+                      aria-label={field.label}
+                      aria-invalid={Boolean(fieldError)}
+                      aria-describedby={fieldError ? `${field.name}-error` : undefined}
+                      value={value}
+                      required={field.required}
+                      rows={3}
+                      onChange={(event) => setValue(event.target.value)}
+                      className={inputClass}
+                    />
+                  ) : (
+                    <input
+                      aria-label={field.label}
+                      aria-invalid={Boolean(fieldError)}
+                      aria-describedby={fieldError ? `${field.name}-error` : undefined}
+                      type={field.type}
+                      value={value}
+                      required={field.required}
+                      min={field.min}
+                      max={field.max}
+                      step={field.step}
+                      onChange={(event) => setValue(event.target.value)}
+                      className={inputClass}
+                    />
+                  )}
+                  {fieldError && (
+                    <span id={`${field.name}-error`} className="block text-xs font-semibold text-rose-600 animate-fade-in">
+                      {fieldError}
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+
+          {formError && (
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-800">
+              <p className="font-bold">{formError.message}</p>
+              {formError instanceof ApiError && (
+                <details className="mt-1 font-mono">
+                  <summary className="cursor-pointer font-sans font-medium hover:underline">Technical detail</summary>
+                  <code>{formError.technicalMessage}</code>
+                </details>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-end gap-3 border-t border-gray-100 pt-4">
+            <button
+              type="button"
+              onClick={() => { setFormOpen(false); setEditingRecord(null); setFormError(null); }}
+              disabled={saving}
+              className="rounded-xl border border-gray-300 px-4 py-2 text-xs font-semibold text-gray-700 shadow-2xs transition-colors hover:bg-gray-50 disabled:opacity-60 cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded-xl bg-blue-700 px-5 py-2 text-xs font-semibold text-white shadow-sm transition-all hover:bg-blue-800 disabled:cursor-wait disabled:opacity-60 cursor-pointer"
+              style={{ backgroundColor: '#1a5fb4' }}
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ── Requirement 2: Desktop Table & Mobile Cards ── */}
+      <section aria-label={`${meta.title} records`}>
+        {/* Desktop View */}
+        <div className="hidden max-h-[72vh] overflow-auto md:block">
+          <DataTable<RecordRow>
+            columns={columns}
+            data={rows}
+            loading={loading}
+            emptyMessage={search ? `No ${meta.title.toLowerCase()} match your search.` : 'No records exist in the connected database.'}
+          />
+        </div>
+
+        {/* Requirement 2: Mobile View (Cards instead of wide table) */}
+        <div className="grid max-h-[75vh] gap-3.5 overflow-y-auto md:hidden" aria-label={`${meta.title} mobile records`}>
+          {loading ? (
+            [0, 1, 2].map((item) => <div key={item} className="h-36 animate-pulse rounded-xl bg-gray-100 border border-gray-200" />)
+          ) : rows.length === 0 ? (
+            <div className="flex min-h-40 flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500 shadow-2xs">
+              <Inbox size={36} strokeWidth={1.25} className="text-gray-400" />
+              <p className="font-semibold text-gray-700">
+                {search ? `No ${meta.title.toLowerCase()} match your search on this screen.` : `No ${meta.title.toLowerCase()} to show on this screen.`}
+              </p>
+              <p className="text-xs text-gray-400">Try adjusting your search criteria or add a new record.</p>
+            </div>
+          ) : (
+            rows.map((row) => (
+              <article key={String(row.id)} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
+                <div className="mb-3 flex items-center justify-between border-b border-gray-100 pb-2.5">
+                  <h3 className="font-bold text-gray-900 text-sm">{recordLabel} #{row.id}</h3>
+                  {columns.find((column) => column.key === 'actions')?.render?.(row)}
+                </div>
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-2.5 text-xs">
+                  {mobileColumns.map((column) => (
+                    <div key={String(column.key)} className="min-w-0">
+                      <dt className="font-semibold text-gray-500 uppercase text-[10px] tracking-wider">{column.label}</dt>
+                      <dd className="mt-0.5 break-words font-medium text-gray-900">{renderCell(column, row)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
     </div>
   );
 };

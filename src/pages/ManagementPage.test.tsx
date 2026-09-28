@@ -52,8 +52,9 @@ afterEach(() => {
 describe('vehicle management form', () => {
   it('sends numeric year and capacity to the configured vehicles endpoint', async () => {
     render(<ManagementPage page="vehicles" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Vehicle' }));
     fillVehicleDetails('2023', '4');
-    fireEvent.click(screen.getByRole('button', { name: 'Add Vehicle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:3001/api/vehicles',
@@ -74,7 +75,7 @@ describe('vehicle management form', () => {
       nextMaintenanceDate: null,
     });
     expect(await screen.findByText('Vehicle saved to the backend.')).toBeInTheDocument();
-    expect(await screen.findByText('WP-FRONT-1001')).toBeInTheDocument();
+    expect(await screen.findAllByText('WP-FRONT-1001')).toHaveLength(2);
     expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/vehicles') && init?.method === undefined)).toHaveLength(2);
   });
 
@@ -83,8 +84,9 @@ describe('vehicle management form', () => {
     ['Seating capacity', '2023', '1000', 'Seating capacity must be between 1 and 999.'],
   ])('rejects an out-of-range %s without posting', async (field, year, capacity, message) => {
     render(<ManagementPage page="vehicles" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Vehicle' }));
     fillVehicleDetails(year, capacity);
-    fireEvent.click(screen.getByRole('button', { name: 'Add Vehicle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     expect(await screen.findByText(message)).toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/api/vehicles') && init?.method === 'POST')).toBe(false);
@@ -95,13 +97,14 @@ describe('vehicle management form', () => {
     render(<ManagementPage page="drivers" />);
     expect(await screen.findByText('No records exist in the connected database.')).toBeInTheDocument();
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Driver' }));
     fireEvent.change(screen.getByLabelText('First name'), { target: { value: 'Maya' } });
     fireEvent.change(screen.getByLabelText('Last name'), { target: { value: 'Perera' } });
     fireEvent.change(screen.getByLabelText('Licence number'), { target: { value: 'DL-9001' } });
     fireEvent.change(screen.getByLabelText('Licence expiry'), { target: { value: '2030-12-31' } });
     fireEvent.change(screen.getByLabelText('Total trips'), { target: { value: '12' } });
     fireEvent.change(screen.getByLabelText('Rating'), { target: { value: '4.5' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Driver' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/drivers') && init?.method === 'POST')).toBe(true));
     const postCall = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/drivers') && init?.method === 'POST');
@@ -115,17 +118,17 @@ describe('vehicle management form', () => {
     }]);
     render(<ManagementPage page="drivers" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Driver #7' }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit Driver #7' }))[0]);
     expect(screen.getByLabelText('First name')).toHaveValue('Maya');
     fireEvent.change(screen.getByLabelText('First name'), { target: { value: 'Amaya' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save Driver' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:3001/api/drivers/7',
       expect.objectContaining({ method: 'PATCH' }),
     ));
     expect(await screen.findByText('Driver updated to the backend.')).toBeInTheDocument();
-    expect(await screen.findByText('Amaya Perera')).toBeInTheDocument();
+    expect(await screen.findAllByText('Amaya Perera')).toHaveLength(2);
   });
 
   it('prefills and updates a route using the existing route modal', async () => {
@@ -145,6 +148,6 @@ describe('vehicle management form', () => {
       expect.objectContaining({ method: 'PATCH' }),
     ));
     expect(await screen.findByText('Route updated to the backend and list refreshed.')).toBeInTheDocument();
-    expect(await screen.findByText('Negombo')).toBeInTheDocument();
+    expect(await screen.findAllByText('Negombo')).toHaveLength(2);
   });
 });

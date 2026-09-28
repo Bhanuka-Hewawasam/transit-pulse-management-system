@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Download } from 'lucide-react';
 import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import type { Column } from '../components/DataTable';
@@ -48,6 +49,15 @@ const tabOptions: Array<{ id: ReportKey; label: string }> = [
   { id: 'history', label: 'Passenger history' }, { id: 'maintenance', label: 'Maintenance due' },
   { id: 'performance', label: 'Driver and vehicle performance' }, { id: 'route-revenue-ratings', label: 'Route revenue and reviews' },
 ];
+
+const reportDescriptions: Record<ReportKey, string> = {
+  routes: 'Rank routes by non-cancelled bookings.',
+  revenue: 'Review paid ticket revenue for a selected date range.',
+  history: 'Inspect the bookings and trips associated with a passenger.',
+  maintenance: 'Find vehicles due now or within the selected time window.',
+  performance: 'Compare driver and vehicle trip and feedback performance.',
+  'route-revenue-ratings': 'Compare Oracle ticket revenue with MongoDB review ratings.',
+};
 
 const Reports: React.FC = () => {
   const [report, setReport] = useState<ReportKey>('routes');
@@ -244,24 +254,25 @@ const Reports: React.FC = () => {
       : 'No records match this report.';
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Business Reports</h2>
-        <p className="mt-1 text-sm text-gray-600">Calculated from records returned by the backend API.</p>
-        <p className="mt-1 text-xs text-gray-500" role="status">Application mode: {mode === 'oracle' ? 'Oracle records' : mode === 'demo' ? 'Demo records' : 'Checking'}</p>
+    <div className="space-y-6">
+      <div className="flex flex-col gap-2 border-b border-gray-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
+        <div><p className="text-xs font-semibold uppercase tracking-wide text-blue-800">Analytics</p><h2 className="mt-1 text-2xl font-bold text-gray-900">Business Reports</h2><p className="mt-1 text-sm text-gray-600">{reportDescriptions[report]}</p></div>
+        <p className="text-xs text-gray-500" role="status">Application mode: {mode === 'oracle' ? 'Oracle records' : mode === 'demo' ? 'Demo records' : 'Checking'}</p>
       </div>
-      <div className="flex flex-wrap gap-2 border-b border-gray-200" role="tablist" aria-label="Business reports">
-        {tabOptions.map((option) => <button key={option.id} type="button" role="tab" aria-selected={report === option.id} onClick={() => setReport(option.id)} className={`border-b-2 px-3 py-2 text-sm font-medium ${report === option.id ? 'border-blue-800 text-blue-900' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>{option.label}</button>)}
+      <div className="overflow-x-auto border-b border-gray-200" role="tablist" aria-label="Business reports">
+        <div className="flex min-w-max gap-1">{tabOptions.map((option) => <button key={option.id} type="button" role="tab" aria-selected={report === option.id} onClick={() => setReport(option.id)} className={`border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${report === option.id ? 'border-blue-800 text-blue-900' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>{option.label}</button>)}</div>
       </div>
-      {report === 'routes' && <label className="block max-w-xs space-y-1 text-sm font-medium text-gray-700"><span>Top N routes</span><input aria-label="Top N routes" type="number" min="0" step="1" value={topN} onChange={(event) => setTopN(event.target.value)} className="w-full rounded border border-gray-300 bg-white px-3 py-2" /></label>}
-      {report === 'revenue' && <div className="grid max-w-xl gap-3 sm:grid-cols-2"><label className="space-y-1 text-sm font-medium text-gray-700"><span>From date</span><input aria-label="From date" type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} className="w-full rounded border border-gray-300 bg-white px-3 py-2" /></label><label className="space-y-1 text-sm font-medium text-gray-700"><span>To date</span><input aria-label="To date" type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} className="w-full rounded border border-gray-300 bg-white px-3 py-2" /></label></div>}
-      {report === 'history' && <label className="block max-w-md space-y-1 text-sm font-medium text-gray-700"><span>Passenger</span><select value={passengerId} onChange={(event) => setPassengerId(event.target.value)} className="w-full rounded border border-gray-300 bg-white px-3 py-2" aria-label="Select passenger"><option value="">Select a passenger</option>{data?.passengers.map((passenger) => <option key={passenger.id} value={passenger.id}>{passengerName(passenger)}</option>)}</select>{selectedPassenger && <span className="text-xs text-gray-500">Travel history for {passengerName(selectedPassenger)}</span>}</label>}
-      {report === 'maintenance' && <label className="block max-w-xs space-y-1 text-sm font-medium text-gray-700"><span>Days ahead</span><input aria-label="Days ahead" type="number" min="0" step="1" value={daysAhead} onChange={(event) => setDaysAhead(event.target.value)} className="w-full rounded border border-gray-300 bg-white px-3 py-2" /></label>}
-      {(loading || serverLoading) && <p className="rounded bg-blue-50 p-3 text-sm text-blue-800">Loading report…</p>}
+      {(report === 'routes' || report === 'revenue' || report === 'history' || report === 'maintenance') && <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"><div className="grid max-w-3xl gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {report === 'routes' && <label className="space-y-1 text-sm font-medium text-gray-700"><span>Top N routes</span><input aria-label="Top N routes" type="number" min="0" step="1" value={topN} onChange={(event) => setTopN(event.target.value)} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-700" /></label>}
+        {report === 'revenue' && <><label className="space-y-1 text-sm font-medium text-gray-700"><span>From date</span><input aria-label="From date" type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-700" /></label><label className="space-y-1 text-sm font-medium text-gray-700"><span>To date</span><input aria-label="To date" type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-700" /></label></>}
+        {report === 'history' && <label className="space-y-1 text-sm font-medium text-gray-700"><span>Passenger</span><select value={passengerId} onChange={(event) => setPassengerId(event.target.value)} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-700" aria-label="Select passenger"><option value="">Select a passenger</option>{data?.passengers.map((passenger) => <option key={passenger.id} value={passenger.id}>{passengerName(passenger)}</option>)}</select>{selectedPassenger && <span className="text-xs text-gray-500">Travel history for {passengerName(selectedPassenger)}</span>}</label>}
+        {report === 'maintenance' && <label className="space-y-1 text-sm font-medium text-gray-700"><span>Days ahead</span><input aria-label="Days ahead" type="number" min="0" step="1" value={daysAhead} onChange={(event) => setDaysAhead(event.target.value)} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-700" /></label>}
+      </div></div>}
+      {(loading || serverLoading) && <p className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800">Loading report…</p>}
       {error && <div role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><p>Unable to load report data: {error.message}</p>{error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}</div>}
       {serverError && <div role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><p>Unable to load this report: {serverError.message}</p>{serverError instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{serverError.technicalMessage}</code></details>}</div>}
       <div className="flex justify-end">
-        <button type="button" onClick={() => downloadCsv(report, reportRows.columns, reportRows.rows)} disabled={reportRows.rows.length === 0} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-not-allowed disabled:opacity-50">Export CSV</button>
+        <button type="button" onClick={() => downloadCsv(report, reportRows.columns, reportRows.rows)} disabled={reportRows.rows.length === 0} className="inline-flex items-center gap-2 rounded-md bg-blue-800 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-900 disabled:cursor-not-allowed disabled:opacity-50"><Download size={16} />Export CSV</button>
       </div>
       <DataTable<ReportRow> columns={reportRows.columns} data={reportRows.rows} loading={loading || serverLoading} emptyMessage={emptyMessage} />
       {mode === 'oracle' && report === 'route-revenue-ratings' && serverRows?.some((row) => row.reviewSourceAvailable === false) && <p className="text-xs text-amber-700">MongoDB reviews are unavailable; revenue is shown without ratings.</p>}

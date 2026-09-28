@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Clock, Menu } from 'lucide-react';
+import SearchBar from './SearchBar';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -9,6 +10,10 @@ interface HeaderProps {
   /** The page name displayed as the header title, e.g. 'Dashboard' */
   currentPage: string;
   onOpenMenu: () => void;
+  searchValue: string;
+  onSearchValueChange: (value: string) => void;
+  role: 'admin' | 'passenger' | 'driver';
+  onRoleChange: (role: 'admin' | 'passenger' | 'driver') => void;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -59,11 +64,10 @@ function formatDateTime(date: Date): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 /**
- * Header – top bar that shows the current page title, live system time,
- * the app version label, and a user avatar. It sits to the right of the
- * 256 px sidebar (ml-64).
+ * Header – shared Admin shell bar with page title, search, role selector,
+ * clock, version label and avatar.
  */
-const Header: React.FC<HeaderProps> = ({ currentPage, onOpenMenu }) => {
+const Header: React.FC<HeaderProps> = ({ currentPage, onOpenMenu, searchValue, onSearchValueChange, role, onRoleChange }) => {
   const [now, setNow] = useState<Date>(new Date());
 
   // Update the clock every second
@@ -74,34 +78,35 @@ const Header: React.FC<HeaderProps> = ({ currentPage, onOpenMenu }) => {
 
   return (
     <header
-      className="
-        fixed top-0 left-64 right-0 z-20
-        h-16 flex items-center justify-between
-        px-6 bg-white border-b border-gray-200
-        shadow-sm
-      "
+      className="fixed inset-x-0 top-0 z-20 flex h-16 items-center gap-3 border-b border-gray-200 bg-white px-3 shadow-sm sm:px-5 md:left-64 md:px-6"
     >
       {/* ── Left: page title ── */}
-      <div className="flex items-center gap-3">
-        <button type="button" onClick={onOpenMenu} aria-label="Open navigation" className="flex h-9 w-9 items-center justify-center rounded text-gray-600 hover:bg-gray-100 md:hidden"><Menu size={19} /></button>
-        <h1 className="text-xl font-semibold" style={{ color: '#0f2044' }}>
+      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+        <button type="button" onClick={onOpenMenu} aria-label="Open navigation" className="flex h-9 w-9 items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-700 md:hidden"><Menu size={19} /></button>
+        <h1 className="hidden text-lg font-semibold sm:block sm:text-xl" style={{ color: '#0f2044' }}>
           {formatPageTitle(currentPage)}
         </h1>
+        <h1 className="text-base font-semibold sm:hidden" style={{ color: '#0f2044' }}>{formatPageTitle(currentPage)}</h1>
       </div>
 
-      {/* ── Right: clock, version badge, avatar ── */}
-      <div className="flex items-center gap-4">
-        {/* Live clock */}
-        <div className="flex items-center gap-1.5 text-gray-500">
+      <div className="min-w-0 flex-1"><SearchBar value={searchValue} onChange={onSearchValueChange} placeholder={`Search ${formatPageTitle(currentPage).toLowerCase()}…`} className="mx-auto max-w-md" /></div>
+
+      {/* ── Right: role selector, clock, version badge, avatar ── */}
+      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+        <label className="sr-only" htmlFor="header-role-select">Demo role</label>
+        <select id="header-role-select" value={role} onChange={(event) => onRoleChange(event.target.value as HeaderProps['role'])} className="w-24 rounded-md border border-gray-200 bg-white px-2 py-2 text-xs text-gray-700 outline-none transition-colors hover:border-gray-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 sm:w-auto sm:px-3 sm:text-sm" aria-label="Demo role">
+          <option value="admin">Admin demo</option><option value="passenger">Passenger demo</option><option value="driver">Driver demo</option>
+        </select>
+        <div className="hidden items-center gap-1.5 text-gray-500 xl:flex">
           <Clock size={14} className="shrink-0" />
-          <span className="text-sm font-mono tracking-tight">
+          <span className="text-xs font-mono">
             {formatDateTime(now)}
           </span>
         </div>
 
         {/* Version label */}
         <span
-          className="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold"
+          className="hidden 2xl:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold"
           style={{ backgroundColor: '#f4f6fb', color: '#1a5fb4' }}
         >
           SmartMove TMS v1.0
@@ -109,13 +114,7 @@ const Header: React.FC<HeaderProps> = ({ currentPage, onOpenMenu }) => {
 
         {/* User avatar */}
         <div
-          className="
-            flex items-center justify-center
-            w-9 h-9 rounded-full
-            text-white text-sm font-bold
-            select-none cursor-default
-            ring-2 ring-offset-1
-          "
+          className="flex h-9 w-9 select-none items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-offset-1"
           style={{ backgroundColor: '#1a5fb4', boxShadow: '0 0 0 2px #3584e4' }}
           title="SmartMove Admin"
         >

@@ -4,7 +4,7 @@
 // stop-count badges with tooltip, and an inline toggle-status button.
 
 import React, { useEffect, useState, useMemo } from 'react';
-import { Plus, MapPin, X } from 'lucide-react';
+import { Plus, MapPin, X, Pencil, ArrowRight, Inbox } from 'lucide-react';
 
 import type { Route } from '../types';
 import { ApiError, apiGet, apiPatch, apiPost } from '../services/api';
@@ -113,19 +113,21 @@ const StopsBadge: React.FC<{ stops: string[] }> = ({ stops }) => {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-const Routes: React.FC = () => {
+const Routes: React.FC<{ searchValue?: string; onSearchValueChange?: (value: string) => void }> = ({ searchValue, onSearchValueChange }) => {
   // ── State ──────────────────────────────────────────────────────────────────
   const [localRoutes,   setLocalRoutes]   = useState<Route[]>([]);
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState<Error | null>(null);
   const [success,       setSuccess]       = useState('');
-  const [searchTerm,    setSearchTerm]    = useState('');
+  const [localSearchTerm, setLocalSearchTerm] = useState('');
   const [activeFilter,  setActiveFilter]  = useState<ActiveFilter>('all');
   const [showAddModal,  setShowAddModal]  = useState(false);
   const [editingRoute, setEditingRoute] = useState<Route | null>(null);
   const [saving, setSaving] = useState(false);
   const [formData,      setFormData]      = useState<RouteFormData>(EMPTY_FORM);
   const [formErrors,    setFormErrors]    = useState<Partial<RouteFormData>>({});
+  const searchTerm = searchValue ?? localSearchTerm;
+  const setSearchTerm = onSearchValueChange ?? setLocalSearchTerm;
 
   useEffect(() => {
     apiGet<Route[]>('/routes').then(setLocalRoutes).catch((requestError: Error) => setError(requestError)).finally(() => setLoading(false));
@@ -242,7 +244,7 @@ const Routes: React.FC = () => {
       key:    'routeCode',
       label:  'Route Code',
       render: (r) => (
-        <span className="font-mono font-bold text-blue-700">{r.routeCode}</span>
+            <span className="font-mono font-bold text-blue-800">{r.routeCode}</span>
       ),
     },
     { key: 'origin',      label: 'Origin' },
@@ -277,7 +279,7 @@ const Routes: React.FC = () => {
     {
       key: 'actions',
       label: 'Actions',
-      render: (route) => <button type="button" aria-label={`Edit Route ${route.routeCode}`} onClick={() => openEditModal(route)} className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100">Edit</button>,
+      render: (route) => <button type="button" aria-label={`Edit Route ${route.routeCode}`} title="Edit route" onClick={() => openEditModal(route)} className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-700"><Pencil size={13} />Edit</button>,
     },
   ];
 
@@ -297,11 +299,7 @@ const Routes: React.FC = () => {
 
         <button
           onClick={openAddModal}
-          className="
-            inline-flex items-center gap-2 px-4 py-2 rounded-lg
-            text-sm font-semibold text-white shadow-sm
-            transition-opacity duration-150 hover:opacity-90
-          "
+          className="inline-flex items-center gap-2 rounded-md px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-blue-700 focus:ring-offset-2"
           style={{ backgroundColor: '#0f2044' }}
         >
           <Plus size={16} />
@@ -315,18 +313,18 @@ const Routes: React.FC = () => {
           {error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}
         </div>
       )}
-      {success && <p role="status" className="text-sm text-emerald-700">{success}</p>}
+      {success && <p role="status" className="fixed right-4 top-20 z-40 max-w-md rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 shadow-lg sm:right-6">{success}</p>}
 
       {/* ── Controls bar ─────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        {/* Search */}
-        <div className="flex-1">
+      <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:flex-row sm:items-center">
+        {/* Standalone page fallback; the App shell supplies the shared search field. */}
+        {onSearchValueChange === undefined && <div className="flex-1">
           <SearchBar
             value={searchTerm}
             onChange={setSearchTerm}
             placeholder="Search by code, origin, destination or stop…"
           />
-        </div>
+        </div>}
 
         {/* Status filter */}
         <div className="flex rounded-lg overflow-hidden border border-gray-200 shrink-0">
@@ -342,7 +340,7 @@ const Routes: React.FC = () => {
                 className={`
                   px-3 py-1.5 text-xs font-medium capitalize transition-colors duration-100
                   ${activeFilter === f
-                    ? 'bg-blue-600 text-white'
+                    ? 'bg-blue-800 text-white'
                     : 'bg-white text-gray-600 hover:bg-gray-50'}
                 `}
               >
@@ -354,12 +352,12 @@ const Routes: React.FC = () => {
       </div>
 
       {/* ── Data table ───────────────────────────────────────────────────── */}
-      <DataTable<Route>
-        columns={columns}
-        data={filteredRoutes}
-        loading={loading}
-        emptyMessage="No routes match your search or filter."
-      />
+      <div className="hidden max-h-[70vh] overflow-auto md:block"><DataTable<Route> columns={columns} data={filteredRoutes} loading={loading} emptyMessage="No routes match your search or filter." /></div>
+      <div className="grid max-h-[70vh] gap-3 overflow-y-auto md:hidden" aria-label="Route cards">
+        {loading ? [0, 1, 2].map((item) => <div key={item} className="h-40 animate-pulse rounded-lg bg-gray-100" />)
+          : filteredRoutes.length === 0 ? <div className="flex min-h-36 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-4 py-8 text-center text-sm text-gray-500"><Inbox size={28} strokeWidth={1.5} /><p>No routes match your search or filter on this screen.</p></div>
+            : filteredRoutes.map((route) => <article key={route.id} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="font-mono text-xs font-bold text-blue-800">{route.routeCode}</p><h3 className="mt-1 flex flex-wrap items-center gap-1 font-semibold text-gray-900"><span>{route.origin}</span><ArrowRight size={15} className="text-blue-800" /><span>{route.destination}</span></h3></div><StatusBadge status={route.isActive ? 'active' : 'inactive'} /></div><div className="mt-3 grid grid-cols-2 gap-2 text-sm text-gray-600"><span>{route.distanceKm} km</span><span>{route.estimatedMinutes} mins</span><span>{formatFare(route.fareAmount)}</span><span>{route.stops.length} stop(s)</span></div><div className="mt-4 flex justify-end"><button type="button" onClick={() => openEditModal(route)} className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-blue-50"><Pencil size={14} />Edit</button></div></article>)}
+      </div>
 
       {/* ── Add / Edit Modal ─────────────────────────────────────────────── */}
       <Modal
@@ -553,6 +551,7 @@ const Routes: React.FC = () => {
             <button
               type="button"
               onClick={handleSave}
+              disabled={saving}
               className="
                 px-4 py-2 rounded-lg text-sm font-semibold text-white
                 transition-opacity duration-150 hover:opacity-90

@@ -45,20 +45,26 @@ function App() {
   const [role, setRole] = useState<Role>(pathRole);
   const [activePage, setActivePage] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [headerSearch, setHeaderSearch] = useState('');
 
   const switchRole = (nextRole: Role) => {
     setRole(nextRole);
     window.history.pushState({}, '', nextRole === 'admin' ? '/admin' : `/${nextRole}`);
   };
 
+  const navigateTo = (page: string) => {
+    setActivePage(page);
+    setHeaderSearch('');
+  };
+
   const renderPage = () => {
     if (activePage === 'dashboard') return <Dashboard />
-    if (activePage === 'routes') return <RoutesPage />
+    if (activePage === 'routes') return <RoutesPage searchValue={headerSearch} onSearchValueChange={setHeaderSearch} />
     if (['vehicles', 'drivers', 'passengers', 'trips', 'bookings', 'payments', 'maintenance', 'feedback'].includes(activePage)) {
-      return <ManagementPage key={activePage} page={activePage} />
+      return <ManagementPage key={activePage} page={activePage} searchValue={headerSearch} onSearchValueChange={setHeaderSearch} />
     }
     if (activePage === 'reports') return <Reports />
-    if (activePage === 'mongodb') return <MongoDBContent />
+    if (activePage === 'mongodb') return <MongoDBContent searchValue={headerSearch} onSearchValueChange={setHeaderSearch} />
     if (activePage === 'documentation') return <Documentation />
     return <UnavailablePage page={activePage} />
   }
@@ -68,10 +74,10 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Sidebar activePage={activePage} onNavigate={setActivePage} isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-      <Header currentPage={activePage} onOpenMenu={() => setSidebarOpen(true)} />
+      <Sidebar activePage={activePage} onNavigate={navigateTo} isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Header currentPage={activePage} onOpenMenu={() => setSidebarOpen(true)} searchValue={headerSearch} onSearchValueChange={setHeaderSearch} role={role} onRoleChange={switchRole} />
       <main className="ml-0 pt-16 md:ml-64">
-        <div className="mx-auto max-w-screen-xl px-6 py-6"><div className="mb-4 flex justify-end"><select value={role} onChange={(event) => switchRole(event.target.value as Role)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" aria-label="Demo role"><option value="admin">Admin demo</option><option value="passenger">Passenger demo</option><option value="driver">Driver demo</option></select></div>{renderPage()}</div>
+        <div className="mx-auto max-w-screen-xl px-4 py-6 sm:px-6">{renderPage()}</div>
       </main>
     </div>
   )

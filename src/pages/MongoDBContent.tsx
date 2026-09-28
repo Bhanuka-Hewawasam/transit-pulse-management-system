@@ -16,13 +16,15 @@ const value = (record: Record<string, unknown>, ...keys: string[]) => {
   return '';
 };
 
-const MongoDBContent: React.FC = () => {
-  const [search, setSearch] = useState('');
+const MongoDBContent: React.FC<{ searchValue?: string; onSearchValueChange?: (value: string) => void }> = ({ searchValue, onSearchValueChange }) => {
+  const [localSearch, setLocalSearch] = useState('');
   const [type, setType] = useState('all');
   const [items, setItems] = useState<ContentItem[]>([]);
   const [source, setSource] = useState<'mongodb' | 'demo' | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const search = searchValue ?? localSearch;
+  const setSearch = onSearchValueChange ?? setLocalSearch;
 
   useEffect(() => {
     let active = true;
@@ -75,7 +77,7 @@ const MongoDBContent: React.FC = () => {
         <div><h2 className="text-2xl font-bold text-gray-900">MongoDB Content</h2><p className="mt-1 text-sm text-gray-600">Reviews, announcements, vehicle documents, and trip media.</p></div>
         <span role="status" className={`text-sm font-medium ${source === 'mongodb' ? 'text-emerald-700' : source === 'demo' ? 'text-amber-700' : 'text-gray-500'}`}>{sourceLabel}</span>
       </div>
-      <div className="flex flex-col gap-3 sm:flex-row"><SearchBar value={search} onChange={setSearch} placeholder="Search content…" className="max-w-md" /><label className="sr-only" htmlFor="content-filter">Filter content</label><select id="content-filter" value={type} onChange={(event) => setType(event.target.value)} className="rounded border border-gray-300 bg-white px-3 py-2 text-sm"><option value="all">All content</option><option value="reviews">Passenger reviews</option><option value="announcements">Travel announcements</option><option value="documents">Vehicle documents</option><option value="media">Trip media</option></select></div>
+      <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:flex-row">{onSearchValueChange === undefined && <SearchBar value={search} onChange={setSearch} placeholder="Search content…" className="max-w-md" />}<label className="sr-only" htmlFor="content-filter">Filter content</label><select id="content-filter" value={type} onChange={(event) => setType(event.target.value)} className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-700"><option value="all">All content</option><option value="reviews">Passenger reviews</option><option value="announcements">Travel announcements</option><option value="documents">Vehicle documents</option><option value="media">Trip media</option></select></div>
       {loading && <p className="rounded bg-blue-50 p-3 text-sm text-blue-800">Loading content from the backend…</p>}
       {error && <div role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><p>Unable to load content: {error.message}</p>{error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}</div>}
       {!loading && !error && filtered.length === 0 ? <div className="border-t border-gray-200 py-10 text-center text-sm text-gray-500">No content matches this search and filter.</div> : <div className="grid gap-3 md:grid-cols-2">{filtered.map((item) => <article key={item.id} className="rounded border border-gray-200 bg-white p-4"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold uppercase text-blue-800">{item.type}</span><span className="text-xs text-gray-500">{source === 'mongodb' ? 'Live record' : 'Demo record'}</span></div><h3 className="font-semibold text-gray-900">{item.title}</h3><p className="mt-2 break-words text-sm text-gray-600">{item.detail || 'No additional detail.'}</p><p className="mt-3 text-xs text-gray-500">{item.meta}</p></article>)}</div>}

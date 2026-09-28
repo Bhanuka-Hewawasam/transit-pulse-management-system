@@ -2,8 +2,8 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { database, nextId } from './database.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, Route, Vehicle } from '../../src/types/index.js';
-import { mongodbContent, mongodbHealth } from './mongodbAdapter.js';
-import { oracleCreate, oracleHealth, oracleList, oracleUpdate, oracleUpdateTripStatus } from './oracleAdapter.js';
+import { mongodbContent, mongodbHealth, mongodbPassengerReviews } from './mongodbAdapter.js';
+import { oracleCreate, oracleHealth, oracleList, oracleReport, oracleUpdate, oracleUpdateTripStatus } from './oracleAdapter.js';
 
 const app = express();
 app.use(cors());
@@ -152,11 +152,15 @@ app.patch('/api/feedback/:id', updateEndpoint('feedback', database.feedback, ['p
 
 app.use('/api/reports', (_request, response, next) => {
   if (process.env.DATABASE_MODE === 'demo') return next();
-  if (process.env.DATABASE_MODE === 'oracle') return response.status(501).json({ error: 'Reports are not yet implemented for Oracle mode.' });
+  if (process.env.DATABASE_MODE === 'oracle') return next();
   return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using data endpoints.' });
 });
 
-app.get('/api/reports/most-used-routes', (_request, response) => {
+app.get('/api/reports/most-used-routes', async (request, response, next) => {
+  if (process.env.DATABASE_MODE === 'oracle') {
+    try { return response.json(await oracleReport('most-used-routes', { topN: request.query.topN })); }
+    catch (error) { return next(error); }
+  }
   const counts = new Map<number, number>();
   database.bookings.filter((booking) => booking.status !== 'cancelled').forEach((booking) => {
     const trip = database.trips.find((candidate) => candidate.id === booking.tripId);
@@ -164,7 +168,11 @@ app.get('/api/reports/most-used-routes', (_request, response) => {
   });
   response.json([...counts.entries()].map(([routeId, bookingCount]) => ({ route: database.routes.find((route) => route.id === routeId), bookingCount })).sort((a, b) => b.bookingCount - a.bookingCount));
 });
-app.get('/api/reports/revenue', (_request, response) => {
+app.get('/api/reports/revenue', async (request, response, next) => {
+  if (process.env.DATABASE_MODE === 'oracle') {
+    try { return response.json(await oracleReport('revenue', { fromDate: request.query.fromDate, toDate: request.query.toDate })); }
+    catch (error) { return next(error); }
+  }
   const totals = new Map<string, number>();
   database.payments.filter((payment) => payment.status === 'paid' && payment.paymentDate).forEach((payment) => {
     const period = payment.paymentDate?.slice(0, 7);
@@ -172,17 +180,94 @@ app.get('/api/reports/revenue', (_request, response) => {
   });
   response.json([...totals].map(([period, revenue]) => ({ period, revenue })));
 });
-app.get('/api/reports/passenger-history', (request, response) => {
+app.get('/api/reports/passenger-history', async (request, response, next) => {
+  if (process.env.DATABASE_MODE === 'oracle') {
+    try { return response.json(await oracleReport('passenger-history', { passengerId: request.query.passengerId })); }
+    catch (error) { return next(error); }
+  }
   const passengerId = Number(request.query.passengerId);
   if (!Number.isInteger(passengerId)) return response.status(400).json({ error: 'passengerId must be an integer' });
   response.json(database.bookings.filter((booking) => booking.passengerId === passengerId));
 });
-app.get('/api/reports/maintenance-due', (_request, response) => response.json(database.maintenance.filter((record) => record.status === 'overdue' || record.status === 'in_progress')));
-app.get('/api/reports/performance', (_request, response) => response.json(database.drivers.map((driver) => ({ driver, feedbackCount: database.feedback.filter((item) => item.driverId === driver.id).length })).sort((a, b) => b.driver.rating - a.driver.rating)));
+app.get('/api/reports/maintenance-due', async (request, response, next) => {
+  if (process.env.DATABASE_MODE === 'oracle') {
+    try { return response.json(await oracleReport('maintenance-due', { daysAhead: request.query.daysAhead })); }
+    catch (error) { return next(error); }
+  }
+  return response.json(database.maintenance.filter((record) => record.status === 'overdue' || record.status === 'in_progress'));
+});
+app.get('/api/reports/performance', async (_request, response, next) => {
+  if (process.env.DATABASE_MODE === 'oracle') {
+    try { return response.json(await oracleReport('performance')); }
+    catch (error) { return next(error); }
+  }
+  return response.json(database.drivers.map((driver) => ({ driver, feedbackCount: database.feedback.filter((item) => item.driverId === driver.id).length })).sort((a, b) => b.driver.rating - a.driver.rating));
+});
+
+app.get('/api/reports/route-revenue-ratings', async (_request, response, next) => {
+  if (process.env.DATABASE_MODE !== 'oracle') {
+    const reviewsByRoute = new Map<number, { total: number; count: number }>();
+    for (const review of database.feedback) {
+      const trip = database.trips.find((candidate) => candidate.id === review.tripId);
+      if (trip) {
+        const aggregate = reviewsByRoute.get(trip.routeId) ?? { total: 0, count: 0 };
+        aggregate.total += review.rating;
+        aggregate.count += 1;
+        reviewsByRoute.set(trip.routeId, aggregate);
+      }
+    }
+    return response.json(database.routes.map((route) => {
+      const paidRevenue = database.payments.filter((payment) => payment.status === 'paid').reduce((total, payment) => {
+        const booking = database.bookings.find((candidate) => candidate.id === payment.bookingId);
+        const trip = booking && database.trips.find((candidate) => candidate.id === booking.tripId);
+        return trip?.routeId === route.id ? total + payment.amount : total;
+      }, 0);
+      const aggregate = reviewsByRoute.get(route.id);
+      return { routeId: route.id, routeCode: route.routeCode, origin: route.origin, destination: route.destination,
+        paidRevenue, averageReviewRating: aggregate ? aggregate.total / aggregate.count : null, reviewCount: aggregate?.count ?? 0 };
+    }));
+  }
+  try {
+    const [revenueRows, health] = await Promise.all([oracleReport('route-revenue-ratings'), mongodbHealth()]);
+    const reviews = health.connected ? await mongodbPassengerReviews() : [];
+    const routeIdsByCode = new Map(revenueRows.map((row) => [String(row.routeCode), Number(row.routeId)]));
+    const ratingsByRoute = new Map<number, { total: number; count: number }>();
+    for (const review of reviews) {
+      const routeCode = String(review.routeCode ?? review.route_code ?? '');
+      const routeId = Number(review.routeId ?? review.route_id ?? routeIdsByCode.get(routeCode));
+      const rating = Number(review.rating);
+      if (!Number.isInteger(routeId) || !Number.isFinite(rating)) continue;
+      const aggregate = ratingsByRoute.get(routeId) ?? { total: 0, count: 0 };
+      aggregate.total += rating;
+      aggregate.count += 1;
+      ratingsByRoute.set(routeId, aggregate);
+    }
+    return response.json(revenueRows.map((row) => {
+      const aggregate = ratingsByRoute.get(Number(row.routeId));
+      return { ...row, averageReviewRating: aggregate ? aggregate.total / aggregate.count : null, reviewCount: aggregate?.count ?? 0,
+        reviewSourceAvailable: health.connected };
+    }));
+  } catch (error) { return next(error); }
+});
 
 app.use((_request, response) => response.status(404).json({ error: 'Endpoint not found' }));
 app.use((error: Error & { statusCode?: number; errorNum?: number; code?: string }, _request: Request, response: Response, _next: NextFunction) => {
   const oracleCode = error.code?.match(/ORA-(\d{5})/)?.[1] ?? String(error.errorNum ?? '');
+  if (/^20\d{3}$/.test(oracleCode)) {
+    const message = error.message.split(/\r?\n/, 1)[0].replace(/^ORA-20\d{3}:\s*/, '');
+    return response.status(400).json({ error: message });
+  }
+  const undeclaredIdentifier = error.message.match(/PLS-00201:\s*identifier '([A-Za-z0-9_$#]+)' must be declared/);
+  if (oracleCode === '06550' && undeclaredIdentifier) {
+    const procedureName = undeclaredIdentifier[1];
+    const detail = `PLS-00201: identifier '${procedureName}' must be declared`;
+    console.error(`Oracle request failed with ORA-06550: ${detail}`);
+    return response.status(500).json({
+      error: `Oracle procedure ${procedureName} is missing or not visible to the application schema. Run database/oracle/07_report_procedures.sql in that schema.`,
+      code: 'ORA-06550',
+      detail,
+    });
+  }
   if (oracleCode === '00001') return response.status(409).json({ error: 'A record with one of these unique values already exists.' });
   if (oracleCode === '02291') return response.status(400).json({ error: 'A referenced record does not exist. Check the supplied foreign-key IDs.' });
   if (oracleCode === '02292') return response.status(409).json({ error: 'This record is still referenced by another record.' });
@@ -191,6 +276,11 @@ app.use((error: Error & { statusCode?: number; errorNum?: number; code?: string 
   if (oracleCode === '01017') return response.status(503).json({ error: 'Oracle login failed. Check ORACLE_USER and ORACLE_PASSWORD in the backend environment.' });
   if (/^(12154|12514|12541|12170|03113|03114|12545)$/.test(oracleCode) || error.code?.startsWith('NJS-') || error.code?.startsWith('DPI-') || error.message.includes('Oracle credentials are not configured')) {
     return response.status(503).json({ error: 'Oracle is unavailable. Check the backend connection settings and database service.' });
+  }
+  if (oracleCode) {
+    const message = `Oracle request failed with ORA-${oracleCode}. See server diagnostics for details.`;
+    console.error(message);
+    return response.status(500).json({ error: message, code: `ORA-${oracleCode}` });
   }
   return response.status(error.statusCode ?? 500).json({ error: error.message || 'Internal server error' });
 });

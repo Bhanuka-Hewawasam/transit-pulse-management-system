@@ -38,6 +38,11 @@ export async function mongodbContent(): Promise<{ reviews: unknown[]; announceme
   return { reviews, announcements, documents, media };
 }
 
+export async function mongodbPassengerReviews(): Promise<Record<string, unknown>[]> {
+  const database = await getDb();
+  return database.collection('passenger_reviews').find({}).toArray();
+}
+
 export async function closeMongo(): Promise<void> {
   if (client) await client.close();
   client = undefined;

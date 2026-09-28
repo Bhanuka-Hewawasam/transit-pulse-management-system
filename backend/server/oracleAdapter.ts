@@ -8,6 +8,7 @@ const tableMap = {
 } as const;
 
 type Resource = keyof typeof tableMap;
+export type OracleReportName = 'most-used-routes' | 'revenue' | 'passenger-history' | 'maintenance-due' | 'performance' | 'route-revenue-ratings';
 const primaryKeyMap: Record<Resource, string> = {
   vehicles: 'VEHICLE_ID', drivers: 'DRIVER_ID', routes: 'ROUTE_ID', passengers: 'PASSENGER_ID',
   trips: 'TRIP_ID', bookings: 'BOOKING_ID', payments: 'PAYMENT_ID',
@@ -111,6 +112,69 @@ export async function oracleList(resource: Resource): Promise<Record<string, unk
     }
     return records;
   } finally {
+    await connection.close();
+  }
+}
+
+const reportInteger = (value: unknown, name: string, minimum: number): number => {
+  const parsed = Number(value);
+  if (value === undefined || value === null || value === '' || !Number.isInteger(parsed) || parsed < minimum) {
+    throw Object.assign(new Error(`${name} must be an integer of at least ${minimum}`), { statusCode: 400 });
+  }
+  return parsed;
+};
+
+export async function oracleReport(
+  report: OracleReportName,
+  parameters: { topN?: unknown; fromDate?: unknown; toDate?: unknown; passengerId?: unknown; daysAhead?: unknown } = {},
+): Promise<Record<string, unknown>[]> {
+  let procedure: string;
+  let binds: Record<string, unknown>;
+  switch (report) {
+    case 'most-used-routes':
+      procedure = 'BEGIN REPORT_MOST_USED_ROUTES(:p_top_n, :p_results); END;';
+      binds = { p_top_n: reportInteger(parameters.topN, 'topN', 0) };
+      break;
+    case 'revenue': {
+      const fromDate = dateValue(parameters.fromDate, 'fromDate');
+      const toDate = dateValue(parameters.toDate, 'toDate');
+      if (!fromDate || !toDate) throw Object.assign(new Error('fromDate and toDate are required'), { statusCode: 400 });
+      if (fromDate > toDate) throw Object.assign(new Error('fromDate must not be after toDate'), { statusCode: 400 });
+      procedure = 'BEGIN REPORT_PAID_REVENUE(:p_from_date, :p_to_date, :p_results); END;';
+      binds = { p_from_date: fromDate, p_to_date: toDate };
+      break;
+    }
+    case 'passenger-history':
+      procedure = 'BEGIN REPORT_PASSENGER_HISTORY(:p_passenger_id, :p_results); END;';
+      binds = { p_passenger_id: reportInteger(parameters.passengerId, 'passengerId', 1) };
+      break;
+    case 'maintenance-due':
+      procedure = 'BEGIN REPORT_VEHICLES_DUE(:p_days_ahead, :p_results); END;';
+      binds = { p_days_ahead: reportInteger(parameters.daysAhead, 'daysAhead', 0) };
+      break;
+    case 'performance':
+      procedure = 'BEGIN REPORT_DRIVER_PERFORMANCE(:p_results); END;';
+      binds = {};
+      break;
+    case 'route-revenue-ratings':
+      procedure = 'BEGIN REPORT_ROUTE_REVENUE(:p_results); END;';
+      binds = {};
+      break;
+  }
+
+  const connection = await (await getPool()).getConnection();
+  let resultSet: oracledb.ResultSet<Record<string, unknown>> | undefined;
+  try {
+    const result = await connection.execute(procedure, {
+      ...binds,
+      p_results: { dir: oracledb.BIND_OUT, type: oracledb.CURSOR },
+    } as oracledb.BindParameters, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    const outBinds = result.outBinds as { p_results: oracledb.ResultSet<Record<string, unknown>> };
+    resultSet = outBinds.p_results;
+    const rows = await resultSet.getRows();
+    return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [camelCase(key), value])));
+  } finally {
+    if (resultSet) await resultSet.close();
     await connection.close();
   }
 }

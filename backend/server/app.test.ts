@@ -6,15 +6,29 @@ const oracleMocks = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  report: vi.fn(),
   updateTripStatus: vi.fn(),
+}));
+
+const mongoMocks = vi.hoisted(() => ({
+  health: vi.fn(),
+  content: vi.fn(),
+  reviews: vi.fn(),
 }));
 
 vi.mock('./oracleAdapter.js', () => ({
   oracleHealth: oracleMocks.health,
   oracleList: oracleMocks.list,
   oracleCreate: oracleMocks.create,
+  oracleReport: oracleMocks.report,
   oracleUpdate: oracleMocks.update,
   oracleUpdateTripStatus: oracleMocks.updateTripStatus,
+}));
+
+vi.mock('./mongodbAdapter.js', () => ({
+  mongodbHealth: mongoMocks.health,
+  mongodbContent: mongoMocks.content,
+  mongodbPassengerReviews: mongoMocks.reviews,
 }));
 
 import app from './app.js';
@@ -24,6 +38,9 @@ describe('SmartMove backend API', () => {
     process.env.DATABASE_MODE = 'demo';
     vi.clearAllMocks();
     oracleMocks.health.mockResolvedValue({ database: 'Oracle', connected: false, mode: 'demo', message: 'Oracle configuration is incomplete' });
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: false, mode: 'demo', message: 'MongoDB is not configured' });
+    mongoMocks.content.mockResolvedValue({ reviews: [], announcements: [], documents: [], media: [] });
+    mongoMocks.reviews.mockResolvedValue([]);
   });
 
   it('reports database health without affecting demo data mode', async () => {
@@ -41,6 +58,70 @@ describe('SmartMove backend API', () => {
     expect(vehicles.status).toBe(200);
     expect(vehicles.body.length).toBeGreaterThan(0);
     expect(reports.status).toBe(200);
+  });
+
+  it.each([
+    ['/api/reports/most-used-routes?topN=3', 'most-used-routes', { topN: '3' }],
+    ['/api/reports/revenue?fromDate=2026-01-01&toDate=2026-01-31', 'revenue', { fromDate: '2026-01-01', toDate: '2026-01-31' }],
+    ['/api/reports/passenger-history?passengerId=7', 'passenger-history', { passengerId: '7' }],
+    ['/api/reports/maintenance-due?daysAhead=30', 'maintenance-due', { daysAhead: '30' }],
+    ['/api/reports/performance', 'performance', undefined],
+  ])('dispatches %s to the Oracle report procedure', async (path, report, parameters) => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.report.mockResolvedValue([{ report }]);
+
+    const response = await request(app).get(path);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([{ report }]);
+    if (parameters === undefined) expect(oracleMocks.report).toHaveBeenCalledWith(report);
+    else expect(oracleMocks.report).toHaveBeenCalledWith(report, parameters);
+  });
+
+  it('maps Oracle report application errors to readable HTTP 400 responses', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.report.mockRejectedValue(Object.assign(new Error('ORA-20001: topN must be non-negative'), { code: 'ORA-20001', errorNum: 20001 }));
+
+    const response = await request(app).get('/api/reports/most-used-routes?topN=-1');
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('topN must be non-negative');
+  });
+
+  it('returns a safe actionable JSON message and log for an undeclared report procedure', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    oracleMocks.report.mockRejectedValue(Object.assign(
+      new Error("ORA-06550: line 1, column 7:\nPLS-00201: identifier 'REPORT_MOST_USED_ROUTES' must be declared"),
+      { code: 'ORA-06550', errorNum: 6550 },
+    ));
+
+    const response = await request(app).get('/api/reports/most-used-routes?topN=5');
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({
+      error: 'Oracle procedure REPORT_MOST_USED_ROUTES is missing or not visible to the application schema. Run database/oracle/07_report_procedures.sql in that schema.',
+      code: 'ORA-06550',
+      detail: "PLS-00201: identifier 'REPORT_MOST_USED_ROUTES' must be declared",
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/password|connect string/i);
+    expect(log).toHaveBeenCalledWith("Oracle request failed with ORA-06550: PLS-00201: identifier 'REPORT_MOST_USED_ROUTES' must be declared");
+    log.mockRestore();
+  });
+
+  it('merges MongoDB review averages onto Oracle route revenue by route id', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.report.mockResolvedValue([{ routeId: 4, routeCode: 'R004', paidRevenue: 1250 }]);
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    mongoMocks.reviews.mockResolvedValue([
+      { routeCode: 'R004', rating: 5 }, { routeCode: 'R004', rating: 3 }, { routeCode: 'UNKNOWN', rating: 1 },
+    ]);
+
+    const response = await request(app).get('/api/reports/route-revenue-ratings');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([{ routeId: 4, routeCode: 'R004', paidRevenue: 1250, averageReviewRating: 4, reviewCount: 2, reviewSourceAvailable: true }]);
+    expect(mongoMocks.reviews).toHaveBeenCalledOnce();
   });
 
   it('serves MongoDB-style demo content', async () => {

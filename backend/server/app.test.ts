@@ -7,6 +7,15 @@ const oracleMocks = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   report: vi.fn(),
+  passengerExists: vi.fn(),
+  passengerSearchTrips: vi.fn(),
+  passengerBookings: vi.fn(),
+  passengerProfile: vi.fn(),
+  passengerBookSeat: vi.fn(),
+  passengerPayBooking: vi.fn(),
+  passengerCancelBooking: vi.fn(),
+  passengerSubmitFeedback: vi.fn(),
+  passengerUpdateProfile: vi.fn(),
   updateTripStatus: vi.fn(),
 }));
 
@@ -22,6 +31,15 @@ vi.mock('./oracleAdapter.js', () => ({
   oracleCreate: oracleMocks.create,
   oracleReport: oracleMocks.report,
   oracleUpdate: oracleMocks.update,
+  oraclePassengerExists: oracleMocks.passengerExists,
+  oraclePassengerSearchTrips: oracleMocks.passengerSearchTrips,
+  oraclePassengerBookings: oracleMocks.passengerBookings,
+  oraclePassengerProfile: oracleMocks.passengerProfile,
+  oraclePassengerBookSeat: oracleMocks.passengerBookSeat,
+  oraclePassengerPayBooking: oracleMocks.passengerPayBooking,
+  oraclePassengerCancelBooking: oracleMocks.passengerCancelBooking,
+  oraclePassengerSubmitFeedback: oracleMocks.passengerSubmitFeedback,
+  oraclePassengerUpdateProfile: oracleMocks.passengerUpdateProfile,
   oracleUpdateTripStatus: oracleMocks.updateTripStatus,
 }));
 
@@ -32,6 +50,7 @@ vi.mock('./mongodbAdapter.js', () => ({
 }));
 
 import app from './app.js';
+import { database } from './database.js';
 
 describe('SmartMove backend API', () => {
   beforeEach(() => {
@@ -215,6 +234,159 @@ describe('SmartMove backend API', () => {
     expect(response.status).toBe(200);
     expect(response.body.make).toBe('Updated Make');
     expect(missing.status).toBe(404);
+  });
+
+  it('requires an existing acting passenger and scopes profile and booking reads to the header', async () => {
+    const passenger = database.passengers[0];
+    const otherPassenger = database.passengers[1];
+    const original = { firstName: passenger.firstName, lastName: passenger.lastName, phone: passenger.phone, address: passenger.address };
+    const otherName = otherPassenger.firstName;
+    try {
+      const missingHeader = await request(app).get('/api/passenger/bookings');
+      const invalidHeader = await request(app).get('/api/passenger/bookings').set('X-Passenger-Id', 'not-an-id');
+      const missingPassenger = await request(app).get('/api/passenger/bookings').set('X-Passenger-Id', '99999999');
+      const ownedBookings = await request(app).get('/api/passenger/bookings').set('X-Passenger-Id', String(passenger.id));
+      const profileUpdate = await request(app).put('/api/passenger/profile').set('X-Passenger-Id', String(passenger.id)).send({
+        passengerId: otherPassenger.id, firstName: 'Acting', lastName: 'Passenger', phone: '0770000000', address: 'Test address',
+      });
+
+      expect(missingHeader.status).toBe(400);
+      expect(invalidHeader.status).toBe(400);
+      expect(missingPassenger.status).toBe(404);
+      expect(ownedBookings.status).toBe(200);
+      expect(ownedBookings.body.map((booking: { bookingId: number }) => booking.bookingId).sort((a: number, b: number) => a - b))
+        .toEqual(database.bookings.filter((booking) => booking.passengerId === passenger.id).map((booking) => booking.id).sort((a, b) => a - b));
+      expect(profileUpdate.status).toBe(200);
+      expect(profileUpdate.body.passengerId).toBe(passenger.id);
+      expect(profileUpdate.body.firstName).toBe('Acting');
+      expect(otherPassenger.firstName).toBe(otherName);
+    } finally {
+      Object.assign(passenger, original);
+    }
+  });
+
+  it('uses the verified Oracle passenger header and ignores body passengerId for booking', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.passengerExists.mockResolvedValue(true);
+    oracleMocks.passengerBookSeat.mockResolvedValue(81);
+
+    const response = await request(app).post('/api/passenger/bookings')
+      .set('X-Passenger-Id', '7')
+      .send({ passengerId: 999, tripId: 12, seatNumber: '4', amount: 0, status: 'confirmed' });
+
+    expect(response.status).toBe(201);
+    expect(oracleMocks.passengerExists).toHaveBeenCalledWith(7);
+    expect(oracleMocks.passengerBookSeat).toHaveBeenCalledWith(7, 12, '4');
+    expect(response.body).toEqual({ bookingId: 81, tripId: 12, status: 'pending' });
+  });
+
+  it('passes Oracle passenger search filters and maps procedure errors to HTTP 400', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.passengerExists.mockResolvedValue(true);
+    oracleMocks.passengerSearchTrips.mockResolvedValue([{ tripId: 12, origin: 'Colombo', destination: 'Kandy' }]);
+
+    const response = await request(app).get('/api/passenger/trips?origin=Colombo&destination=Kandy&date=2026-09-28').set('X-Passenger-Id', '7');
+    expect(response.status).toBe(200);
+    expect(oracleMocks.passengerSearchTrips).toHaveBeenCalledWith({ origin: 'Colombo', destination: 'Kandy', date: '2026-09-28' });
+
+    oracleMocks.passengerBookSeat.mockRejectedValue(Object.assign(new Error('ORA-20114: Trip has already departed'), { code: 'ORA-20114', errorNum: 20114 }));
+    const rejectedBooking = await request(app).post('/api/passenger/bookings').set('X-Passenger-Id', '7').send({ tripId: 12, seatNumber: '4' });
+    expect(rejectedBooking.status).toBe(400);
+    expect(rejectedBooking.body.error).toBe('Trip has already departed');
+  });
+
+  it('enforces passenger booking, payment, cancellation, and feedback rules in demo mode', async () => {
+    const passenger = database.passengers[0];
+    const otherPassenger = database.passengers[1];
+    const trip = database.trips.find((candidate) => !database.bookings.some((booking) => booking.tripId === candidate.id && booking.passengerId === passenger.id && ['pending', 'confirmed'].includes(booking.status))
+      && database.bookings.some((booking) => booking.tripId === candidate.id && booking.passengerId !== passenger.id && ['pending', 'confirmed'].includes(booking.status)))!;
+    const route = database.routes.find((item) => item.id === trip.routeId);
+    const originalTrip = { status: trip.status, departureTime: trip.departureTime, availableSeats: trip.availableSeats };
+    const originalBookings = [...database.bookings];
+    const originalPayments = [...database.payments];
+    const originalFeedback = [...database.feedback];
+    const originalCounts = new Map(database.passengers.map((item) => [item.id, item.totalBookings]));
+    try {
+      trip.status = 'scheduled';
+      trip.departureTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      trip.availableSeats = trip.totalSeats;
+      const occupiedSeats = new Set(database.bookings.filter((item) => item.tripId === trip.id && ['pending', 'confirmed'].includes(item.status))
+        .map((item) => Number(item.seatNumber.match(/[0-9]+/)?.[0])).filter(Number.isFinite));
+      const seatNumber = Array.from({ length: trip.totalSeats }, (_, index) => index + 1).find((seat) => !occupiedSeats.has(seat));
+      expect(seatNumber).toBeDefined();
+      const passengerHeader = { 'X-Passenger-Id': String(passenger.id) };
+      const existingSeatNumber = Number(database.bookings.find((item) => item.tripId === trip.id && item.passengerId !== passenger.id && ['pending', 'confirmed'].includes(item.status))?.seatNumber.match(/[0-9]+/)?.[0]);
+      const existingAlphanumericSeat = await request(app).post('/api/passenger/bookings').set(passengerHeader).send({ tripId: trip.id, seatNumber: String(existingSeatNumber) });
+      expect(existingAlphanumericSeat.status).toBe(400);
+      expect(existingAlphanumericSeat.body.error).toMatch(/seat is already booked/);
+
+      const booking = await request(app).post('/api/passenger/bookings').set(passengerHeader).send({
+        passengerId: otherPassenger.id, tripId: trip.id, seatNumber: String(seatNumber), amount: 0, status: 'confirmed',
+      });
+      expect(booking.status).toBe(201);
+      expect(booking.body).toMatchObject({ tripId: trip.id, status: 'pending', amount: route?.fareAmount });
+      const bookingId = booking.body.bookingId as number;
+
+      const doubleBooking = await request(app).post('/api/passenger/bookings').set(passengerHeader).send({ tripId: trip.id, seatNumber: String(Number(seatNumber) + 1) });
+      expect(doubleBooking.status).toBe(400);
+      expect(doubleBooking.body.error).toMatch(/active booking/);
+      const takenSeat = await request(app).post('/api/passenger/bookings').set('X-Passenger-Id', String(otherPassenger.id)).send({ tripId: trip.id, seatNumber: String(seatNumber) });
+      expect(takenSeat.status).toBe(400);
+      expect(takenSeat.body.error).toMatch(/seat is already booked/);
+      const outOfRangeSeat = await request(app).post('/api/passenger/bookings').set('X-Passenger-Id', String(otherPassenger.id)).send({ tripId: trip.id, seatNumber: String(trip.totalSeats + 1) });
+      expect(outOfRangeSeat.status).toBe(400);
+      expect(outOfRangeSeat.body.error).toMatch(/trip capacity/);
+
+      const freeSeat = Array.from({ length: trip.totalSeats }, (_, index) => index + 1).find((seat) => seat !== Number(seatNumber) && !occupiedSeats.has(seat));
+      trip.availableSeats = 0;
+      const fullTrip = await request(app).post('/api/passenger/bookings').set('X-Passenger-Id', String(otherPassenger.id)).send({ tripId: trip.id, seatNumber: String(freeSeat) });
+      expect(fullTrip.status).toBe(400);
+      expect(fullTrip.body.error).toMatch(/Trip is full/);
+      trip.availableSeats = trip.totalSeats - 1;
+
+      const earlyFeedback = await request(app).post('/api/passenger/feedback').set(passengerHeader).send({ tripId: trip.id, rating: 5, comment: 'Not completed yet' });
+      expect(earlyFeedback.status).toBe(400);
+      expect(earlyFeedback.body.error).toMatch(/completed trips/);
+      trip.status = 'completed';
+      const completedFeedback = await request(app).post('/api/passenger/feedback').set(passengerHeader).send({ tripId: trip.id, rating: 5, comment: 'Completed trip' });
+      expect(completedFeedback.status).toBe(201);
+      const duplicateFeedback = await request(app).post('/api/passenger/feedback').set(passengerHeader).send({ tripId: trip.id, rating: 4, comment: 'Duplicate' });
+      expect(duplicateFeedback.status).toBe(400);
+      expect(duplicateFeedback.body.error).toMatch(/already submitted feedback/);
+
+      trip.status = 'scheduled';
+      const wrongAmount = await request(app).post('/api/passenger/payments').set(passengerHeader).send({ bookingId, amount: 0, method: 'cash' });
+      expect(wrongAmount.status).toBe(400);
+      expect(wrongAmount.body.error).toMatch(/must equal/);
+      const someoneElsePayment = await request(app).post('/api/passenger/payments').set('X-Passenger-Id', String(otherPassenger.id)).send({ bookingId, amount: route?.fareAmount, method: 'cash' });
+      expect(someoneElsePayment.status).toBe(400);
+      expect(someoneElsePayment.body.error).toMatch(/does not belong/);
+      const payment = await request(app).post('/api/passenger/payments').set(passengerHeader).send({ bookingId, amount: route?.fareAmount, method: 'cash' });
+      expect(payment.status).toBe(200);
+      expect(database.bookings.find((item) => item.id === bookingId)?.status).toBe('confirmed');
+      const duplicatePayment = await request(app).post('/api/passenger/payments').set(passengerHeader).send({ bookingId, amount: route?.fareAmount, method: 'cash' });
+      expect(duplicatePayment.status).toBe(400);
+
+      trip.departureTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const tooLate = await request(app).post(`/api/passenger/bookings/${bookingId}/cancel`).set(passengerHeader);
+      expect(tooLate.status).toBe(400);
+      expect(tooLate.body.error).toMatch(/within two hours/);
+      const someoneElseCancellation = await request(app).post(`/api/passenger/bookings/${bookingId}/cancel`).set('X-Passenger-Id', String(otherPassenger.id));
+      expect(someoneElseCancellation.status).toBe(400);
+      trip.departureTime = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+      const cancellation = await request(app).post(`/api/passenger/bookings/${bookingId}/cancel`).set(passengerHeader);
+      expect(cancellation.status).toBe(200);
+      expect(database.bookings.find((item) => item.id === bookingId)?.status).toBe('cancelled');
+      expect(database.payments.find((item) => item.bookingId === bookingId)?.status).toBe('refunded');
+      expect(trip.availableSeats).toBe(trip.totalSeats);
+      expect(database.passengers.find((item) => item.id === passenger.id)?.totalBookings).toBe(originalCounts.get(passenger.id));
+    } finally {
+      database.bookings.splice(0, database.bookings.length, ...originalBookings);
+      database.payments.splice(0, database.payments.length, ...originalPayments);
+      database.feedback.splice(0, database.feedback.length, ...originalFeedback);
+      Object.assign(trip, originalTrip);
+      for (const item of database.passengers) item.totalBookings = originalCounts.get(item.id) ?? item.totalBookings;
+    }
   });
 
   it('returns a clear duplicate-value error from Oracle', async () => {

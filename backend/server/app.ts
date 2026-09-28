@@ -1,9 +1,13 @@
 import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { database, nextId } from './database.js';
-import type { Booking, Driver, Feedback, Passenger, Payment, Route, Vehicle } from '../../src/types/index.js';
+import type { Booking, Driver, Feedback, Passenger, Payment, PaymentMethod, Route, Trip, Vehicle } from '../../src/types/index.js';
 import { mongodbContent, mongodbHealth, mongodbPassengerReviews } from './mongodbAdapter.js';
-import { oracleCreate, oracleHealth, oracleList, oracleReport, oracleUpdate, oracleUpdateTripStatus } from './oracleAdapter.js';
+import {
+  oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookings, oraclePassengerCancelBooking,
+  oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerProfile, oraclePassengerSearchTrips,
+  oraclePassengerSubmitFeedback, oraclePassengerUpdateProfile, oracleReport, oracleUpdate, oracleUpdateTripStatus,
+} from './oracleAdapter.js';
 
 const app = express();
 app.use(cors());
@@ -149,6 +153,230 @@ app.patch('/api/bookings/:id', updateEndpoint('bookings', database.bookings, ['t
 app.patch('/api/payments/:id', updateEndpoint('payments', database.payments, ['bookingId', 'amount']));
 app.patch('/api/maintenance/:id', updateEndpoint('maintenance', database.maintenance, ['vehicleId', 'description', 'scheduledDate']));
 app.patch('/api/feedback/:id', updateEndpoint('feedback', database.feedback, ['passengerId', 'tripId', 'driverId', 'vehicleId', 'rating', 'comment']));
+
+const passengerErrorResponse = (error: unknown, response: Response) => {
+  const failure = error as Error & { statusCode?: number; errorNum?: number; code?: string };
+  const oracleCode = failure.code?.match(/ORA-(\d{5})/)?.[1] ?? String(failure.errorNum ?? '');
+  if (/^20\d{3}$/.test(oracleCode)) {
+    const message = failure.message.split(/\r?\n/, 1)[0].replace(/^ORA-20\d{3}:\s*/, '');
+    return response.status(400).json({ error: message });
+  }
+  if (oracleCode === '00001') return response.status(409).json({ error: 'A conflicting passenger or booking record already exists.' });
+  if (failure.statusCode && failure.statusCode >= 400 && failure.statusCode < 500) {
+    return response.status(failure.statusCode).json({ error: failure.message });
+  }
+  console.error(`Passenger API request failed${oracleCode ? ` with ORA-${oracleCode}` : failure.code ? ` with ${failure.code}` : ''}.`);
+  return response.status(500).json({ error: 'Passenger request could not be completed. Please try again.' });
+};
+
+const requireActingPassenger = async (request: Request, response: Response, next: NextFunction) => {
+  const header = request.get('X-Passenger-Id');
+  if (!header) return response.status(400).json({ error: 'X-Passenger-Id header is required.' });
+  const passengerId = Number(header);
+  if (!Number.isInteger(passengerId) || passengerId <= 0) return response.status(400).json({ error: 'X-Passenger-Id must be a positive integer.' });
+  try {
+    const exists = process.env.DATABASE_MODE === 'oracle'
+      ? await oraclePassengerExists(passengerId)
+      : process.env.DATABASE_MODE === 'demo'
+        ? database.passengers.some((passenger) => passenger.id === passengerId)
+        : null;
+    if (exists === null) return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using passenger endpoints.' });
+    if (!exists) return response.status(404).json({ error: 'Passenger was not found.' });
+    response.locals.passengerId = passengerId;
+    return next();
+  } catch (error) {
+    return passengerErrorResponse(error, response);
+  }
+};
+
+type PassengerHandler = (request: Request, response: Response, passengerId: number) => Promise<void> | void;
+const passengerEndpoint = (handler: PassengerHandler) => async (request: Request, response: Response) => {
+  try {
+    await handler(request, response, Number(response.locals.passengerId));
+  } catch (error) {
+    return passengerErrorResponse(error, response);
+  }
+};
+
+const passengerProfile = (passenger: Passenger) => ({
+  passengerId: passenger.id, firstName: passenger.firstName, lastName: passenger.lastName,
+  phone: passenger.phone, address: passenger.address, email: passenger.email, passportOrNic: passenger.passportOrNic,
+});
+
+app.get('/api/passenger/trips', requireActingPassenger, passengerEndpoint(async (request, response) => {
+  const filters = { origin: request.query.origin, destination: request.query.destination, date: request.query.date };
+  if (process.env.DATABASE_MODE === 'oracle') return void response.json(await oraclePassengerSearchTrips(filters));
+  const requestedDate = typeof filters.date === 'string' ? filters.date : '';
+  if (requestedDate && (Number.isNaN(Date.parse(requestedDate)) || !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate))) {
+    return void response.status(400).json({ error: 'date must use YYYY-MM-DD format.' });
+  }
+  const origin = String(filters.origin ?? '').trim().toLowerCase();
+  const destination = String(filters.destination ?? '').trim().toLowerCase();
+  const now = Date.now();
+  return void response.json(database.trips.filter((trip) => {
+    const route = database.routes.find((item) => item.id === trip.routeId);
+    const departure = new Date(trip.departureTime);
+    return trip.status === 'scheduled' && departure.getTime() > now && trip.availableSeats > 0
+      && (!origin || route?.origin.toLowerCase().includes(origin))
+      && (!destination || route?.destination.toLowerCase().includes(destination))
+      && (!requestedDate || departure.toISOString().slice(0, 10) === requestedDate);
+  }).map((trip) => {
+    const route = database.routes.find((item) => item.id === trip.routeId);
+    return { tripId: trip.id, routeId: trip.routeId, routeCode: route?.routeCode, origin: route?.origin,
+      destination: route?.destination, departureTime: trip.departureTime, arrivalTime: trip.arrivalTime,
+      availableSeats: trip.availableSeats, totalSeats: trip.totalSeats, fareAmount: route?.fareAmount };
+  }));
+}));
+
+app.post('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  const tripId = Number(request.body.tripId);
+  const seatNumber = String(request.body.seatNumber ?? '').trim();
+  if (!Number.isInteger(tripId) || tripId <= 0 || !seatNumber) return void response.status(400).json({ error: 'tripId and seatNumber are required.' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    const bookingId = await oraclePassengerBookSeat(passengerId, tripId, seatNumber);
+    return void response.status(201).json({ bookingId, tripId, status: 'pending' });
+  }
+  const trip = database.trips.find((item) => item.id === tripId);
+  if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+  if (trip.status !== 'scheduled') return void response.status(400).json({ error: 'Only scheduled trips can be booked.' });
+  if (new Date(trip.departureTime).getTime() <= Date.now()) return void response.status(400).json({ error: 'Trip has already departed or is not in the future.' });
+  if (!/^\d+$/.test(seatNumber)) return void response.status(400).json({ error: 'Seat number must be a whole number.' });
+  const seat = Number(seatNumber);
+  if (seat < 1 || seat > trip.totalSeats) return void response.status(400).json({ error: 'Seat number must be between 1 and trip capacity.' });
+  if (database.bookings.some((booking) => booking.tripId === tripId && Number(booking.seatNumber.match(/[0-9]+/)?.[0]) === seat && ['pending', 'confirmed'].includes(booking.status))) {
+    return void response.status(400).json({ error: 'That seat is already booked on this trip.' });
+  }
+  if (trip.availableSeats <= 0) return void response.status(400).json({ error: 'Trip is full.' });
+  if (database.bookings.some((booking) => booking.tripId === tripId && booking.passengerId === passengerId && ['pending', 'confirmed'].includes(booking.status))) {
+    return void response.status(400).json({ error: 'Passenger already has an active booking on this trip.' });
+  }
+  const route = database.routes.find((item) => item.id === trip.routeId);
+  if (!route) return void response.status(400).json({ error: 'Trip route was not found.' });
+  const booking: Booking = { id: nextId(database.bookings), tripId, passengerId, seatNumber: String(seat), bookingDate: new Date().toISOString(), status: 'pending', amount: route.fareAmount };
+  database.bookings.push(booking);
+  trip.availableSeats -= 1;
+  return void response.status(201).json({ bookingId: booking.id, tripId, status: booking.status, amount: booking.amount });
+}));
+
+app.post('/api/passenger/payments', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  const bookingId = Number(request.body.bookingId);
+  const amount = Number(request.body.amount);
+  const method = String(request.body.method ?? '').toLowerCase();
+  if (!Number.isInteger(bookingId) || bookingId <= 0 || !Number.isFinite(amount) || !method) {
+    return void response.status(400).json({ error: 'bookingId, amount, and method are required.' });
+  }
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oraclePassengerPayBooking(passengerId, bookingId, amount, method);
+    return void response.json({ bookingId, paymentStatus: 'paid', bookingStatus: 'confirmed' });
+  }
+  const booking = database.bookings.find((item) => item.id === bookingId);
+  if (!booking) return void response.status(404).json({ error: 'Booking was not found.' });
+  if (booking.passengerId !== passengerId) return void response.status(400).json({ error: 'Booking does not belong to this passenger.' });
+  if (database.payments.some((payment) => payment.bookingId === bookingId && payment.status === 'paid')) return void response.status(400).json({ error: 'Booking has already been paid.' });
+  if (booking.status !== 'pending') return void response.status(400).json({ error: 'Only pending bookings can be paid.' });
+  if (amount !== booking.amount) return void response.status(400).json({ error: 'Payment amount must equal the booking amount.' });
+  if (!['card', 'cash', 'online', 'bank_transfer'].includes(method)) return void response.status(400).json({ error: 'Payment method is not valid.' });
+  const payment: Payment = { id: nextId(database.payments), bookingId, amount: booking.amount, paymentDate: new Date().toISOString(), method: method as PaymentMethod, status: 'paid', transactionRef: `DEMO-${Date.now()}` };
+  database.payments.push(payment);
+  booking.status = 'confirmed';
+  const passenger = database.passengers.find((item) => item.id === passengerId);
+  if (passenger) passenger.totalBookings += 1;
+  return void response.json({ bookingId, paymentStatus: 'paid', bookingStatus: 'confirmed' });
+}));
+
+app.post('/api/passenger/bookings/:id/cancel', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  const bookingId = Number(request.params.id);
+  if (!Number.isInteger(bookingId) || bookingId <= 0) return void response.status(400).json({ error: 'bookingId must be a positive integer.' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oraclePassengerCancelBooking(passengerId, bookingId);
+    return void response.json({ bookingId, bookingStatus: 'cancelled' });
+  }
+  const booking = database.bookings.find((item) => item.id === bookingId);
+  if (!booking) return void response.status(404).json({ error: 'Booking was not found.' });
+  if (booking.passengerId !== passengerId) return void response.status(400).json({ error: 'Booking does not belong to this passenger.' });
+  if (!['pending', 'confirmed'].includes(booking.status)) return void response.status(400).json({ error: 'Only pending or confirmed bookings can be cancelled.' });
+  const wasConfirmed = booking.status === 'confirmed';
+  const trip = database.trips.find((item) => item.id === booking.tripId);
+  if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+  if (new Date(trip.departureTime).getTime() <= Date.now() + 2 * 60 * 60 * 1000) return void response.status(400).json({ error: 'Bookings cannot be cancelled within two hours of departure.' });
+  booking.status = 'cancelled';
+  trip.availableSeats = Math.min(trip.totalSeats, trip.availableSeats + 1);
+  if (database.payments.some((payment) => payment.bookingId === bookingId && payment.status === 'paid')) {
+    database.payments.filter((payment) => payment.bookingId === bookingId && payment.status === 'paid').forEach((payment) => { payment.status = 'refunded'; });
+  }
+  if (wasConfirmed) {
+    const passenger = database.passengers.find((item) => item.id === passengerId);
+    if (passenger) passenger.totalBookings = Math.max(0, passenger.totalBookings - 1);
+  }
+  return void response.json({ bookingId, bookingStatus: 'cancelled' });
+}));
+
+app.get('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(async (_request, response, passengerId) => {
+  if (process.env.DATABASE_MODE === 'oracle') return void response.json(await oraclePassengerBookings(passengerId));
+  const now = Date.now();
+  const bookings = database.bookings.filter((booking) => booking.passengerId === passengerId).map((booking) => {
+    const trip = database.trips.find((item) => item.id === booking.tripId);
+    const route = database.routes.find((item) => item.id === trip?.routeId);
+    const lastPayment = database.payments.filter((payment) => payment.bookingId === booking.id).at(-1);
+    return { bookingId: booking.id, tripId: booking.tripId, seatNumber: booking.seatNumber, bookingDate: booking.bookingDate,
+      bookingStatus: booking.status, amount: booking.amount, tripStatus: trip?.status, departureTime: trip?.departureTime,
+      arrivalTime: trip?.arrivalTime, availableSeats: trip?.availableSeats, routeId: route?.id, routeCode: route?.routeCode,
+      origin: route?.origin, destination: route?.destination, paymentStatus: lastPayment?.status ?? 'unpaid',
+      canCancel: Boolean(trip && ['pending', 'confirmed'].includes(booking.status) && new Date(trip.departureTime).getTime() > now + 2 * 60 * 60 * 1000) };
+  });
+  return void response.json(bookings);
+}));
+
+app.post('/api/passenger/feedback', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  const tripId = Number(request.body.tripId);
+  const rating = Number(request.body.rating);
+  const comment = String(request.body.comment ?? '').trim();
+  const category = String(request.body.category ?? 'general').toLowerCase();
+  if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(rating) || !comment) {
+    return void response.status(400).json({ error: 'tripId, a 1-5 rating, and comment are required.' });
+  }
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oraclePassengerSubmitFeedback(passengerId, tripId, rating, comment, category);
+    return void response.status(201).json({ tripId, rating, category });
+  }
+  if (rating < 1 || rating > 5) return void response.status(400).json({ error: 'Rating must be a whole number from 1 to 5.' });
+  const trip = database.trips.find((item) => item.id === tripId);
+  if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+  if (trip.status !== 'completed') return void response.status(400).json({ error: 'Feedback is allowed only for completed trips.' });
+  if (!database.bookings.some((booking) => booking.passengerId === passengerId && booking.tripId === tripId && booking.status !== 'cancelled')) return void response.status(400).json({ error: 'Passenger must have a non-cancelled booking for this trip.' });
+  if (database.feedback.some((item) => item.passengerId === passengerId && item.tripId === tripId)) return void response.status(400).json({ error: 'Passenger has already submitted feedback for this trip.' });
+  if (!['service', 'driver', 'vehicle', 'punctuality', 'general'].includes(category)) return void response.status(400).json({ error: 'Feedback category is not valid.' });
+  const feedback: Feedback = { id: nextId(database.feedback), passengerId, tripId, driverId: trip.driverId, vehicleId: trip.vehicleId, rating, comment, feedbackDate: new Date().toISOString(), category: category as Feedback['category'] };
+  database.feedback.push(feedback);
+  return void response.status(201).json({ tripId, rating, category });
+}));
+
+app.get('/api/passenger/profile', requireActingPassenger, passengerEndpoint(async (_request, response, passengerId) => {
+  if (process.env.DATABASE_MODE === 'oracle') {
+    const profile = await oraclePassengerProfile(passengerId);
+    if (!profile) return void response.status(404).json({ error: 'Passenger was not found.' });
+    return void response.json(profile);
+  }
+  const passenger = database.passengers.find((item) => item.id === passengerId);
+  return void response.json(passengerProfile(passenger!));
+}));
+
+app.put('/api/passenger/profile', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  const firstName = String(request.body.firstName ?? '').trim();
+  const lastName = String(request.body.lastName ?? '').trim();
+  const phone = request.body.phone === null ? null : String(request.body.phone ?? '').trim() || null;
+  const address = request.body.address === null ? null : String(request.body.address ?? '').trim() || null;
+  if (!firstName || !lastName) return void response.status(400).json({ error: 'First name and last name are required.' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oraclePassengerUpdateProfile(passengerId, { firstName, lastName, phone, address });
+    const profile = await oraclePassengerProfile(passengerId);
+    return void response.json(profile);
+  }
+  const passenger = database.passengers.find((item) => item.id === passengerId);
+  if (!passenger) return void response.status(404).json({ error: 'Passenger was not found.' });
+  Object.assign(passenger, { firstName, lastName, phone, address });
+  return void response.json(passengerProfile(passenger));
+}));
 
 app.use('/api/reports', (_request, response, next) => {
   if (process.env.DATABASE_MODE === 'demo') return next();

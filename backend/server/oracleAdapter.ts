@@ -179,6 +179,174 @@ export async function oracleReport(
   }
 }
 
+export type PassengerTripSearch = { origin?: unknown; destination?: unknown; date?: unknown };
+
+export type PassengerProfile = {
+  passengerId: number;
+  firstName: string;
+  lastName: string;
+  phone: string | null;
+  address: string | null;
+  email: string;
+  passportOrNic: string;
+};
+
+async function withPassengerTransaction<T>(operation: (connection: oracledb.Connection) => Promise<T>): Promise<T> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await operation(connection);
+    await connection.commit();
+    return result;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    await connection.close();
+  }
+}
+
+export async function oraclePassengerExists(passengerId: number): Promise<boolean> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<{ PASSENGER_ID: number }>(
+      'SELECT passenger_id FROM passengers WHERE passenger_id = :passengerId',
+      { passengerId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return Boolean(result.rows?.length);
+  } finally { await connection.close(); }
+}
+
+export async function oraclePassengerSearchTrips(filters: PassengerTripSearch): Promise<Record<string, unknown>[]> {
+  const dateInput = filters.date === undefined || filters.date === null || filters.date === '' ? null : String(filters.date);
+  if (dateInput && (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput) || !dateValue(dateInput, 'date'))) {
+    throw Object.assign(new Error('date must use YYYY-MM-DD format.'), { statusCode: 400 });
+  }
+  const origin = String(filters.origin ?? '').trim() || null;
+  const destination = String(filters.destination ?? '').trim() || null;
+  const conditions = ["t.status = 'scheduled'", 't.departure_time > SYSTIMESTAMP', 't.available_seats > 0'];
+  const binds: Record<string, unknown> = {};
+  if (origin) {
+    conditions.push('INSTR(UPPER(r.origin), UPPER(:origin)) > 0');
+    binds.origin = origin;
+  }
+  if (destination) {
+    conditions.push('INSTR(UPPER(r.destination), UPPER(:destination)) > 0');
+    binds.destination = destination;
+  }
+  if (dateInput) {
+    const nextDay = new Date(`${dateInput}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    conditions.push("t.departure_time >= TO_DATE(:travelDateStart, 'YYYY-MM-DD') AND t.departure_time < TO_DATE(:travelDateEnd, 'YYYY-MM-DD')");
+    binds.travelDateStart = dateInput;
+    binds.travelDateEnd = nextDay.toISOString().slice(0, 10);
+  }
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT t.trip_id, t.route_id, r.route_code, r.origin, r.destination, t.departure_time,
+              t.arrival_time, t.available_seats, t.total_seats, r.fare_amount
+         FROM trips t JOIN routes r ON r.route_id = t.route_id
+        WHERE ${conditions.join('\n          AND ')}
+        ORDER BY t.departure_time`,
+      binds as oracledb.BindParameters,
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return (result.rows ?? []).map((row) => ({
+      tripId: row.TRIP_ID, routeId: row.ROUTE_ID, routeCode: row.ROUTE_CODE, origin: row.ORIGIN,
+      destination: row.DESTINATION, departureTime: row.DEPARTURE_TIME, arrivalTime: row.ARRIVAL_TIME,
+      availableSeats: row.AVAILABLE_SEATS, totalSeats: row.TOTAL_SEATS, fareAmount: row.FARE_AMOUNT,
+    }));
+  } finally { await connection.close(); }
+}
+
+export async function oraclePassengerBookings(passengerId: number): Promise<Record<string, unknown>[]> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT b.booking_id, b.trip_id, b.seat_number, b.booking_date, b.status AS booking_status, b.amount,
+              t.status AS trip_status, t.departure_time, t.arrival_time, t.available_seats,
+              r.route_id, r.route_code, r.origin, r.destination,
+              NVL((SELECT status FROM (
+                SELECT py.status FROM payments py WHERE py.booking_id = b.booking_id
+                ORDER BY py.payment_date DESC, py.payment_id DESC
+              ) WHERE ROWNUM = 1), 'unpaid') AS payment_status,
+              CASE WHEN b.status IN ('pending', 'confirmed')
+                     AND t.departure_time > SYSTIMESTAMP + INTERVAL '2' HOUR
+                   THEN 1 ELSE 0 END AS can_cancel
+         FROM bookings b JOIN trips t ON t.trip_id = b.trip_id
+         JOIN routes r ON r.route_id = t.route_id
+        WHERE b.passenger_id = :passengerId
+        ORDER BY t.departure_time DESC, b.booking_date DESC`,
+      { passengerId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return (result.rows ?? []).map((row) => ({
+      bookingId: row.BOOKING_ID, tripId: row.TRIP_ID, seatNumber: row.SEAT_NUMBER,
+      bookingDate: row.BOOKING_DATE, bookingStatus: row.BOOKING_STATUS, amount: row.AMOUNT,
+      tripStatus: row.TRIP_STATUS, departureTime: row.DEPARTURE_TIME, arrivalTime: row.ARRIVAL_TIME,
+      availableSeats: row.AVAILABLE_SEATS, routeId: row.ROUTE_ID, routeCode: row.ROUTE_CODE,
+      origin: row.ORIGIN, destination: row.DESTINATION, paymentStatus: row.PAYMENT_STATUS,
+      canCancel: Number(row.CAN_CANCEL) === 1,
+    }));
+  } finally { await connection.close(); }
+}
+
+export async function oraclePassengerProfile(passengerId: number): Promise<PassengerProfile | null> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT passenger_id, first_name, last_name, phone, address, email, nic_or_passport
+         FROM passengers WHERE passenger_id = :passengerId`,
+      { passengerId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const row = result.rows?.[0];
+    return row ? {
+      passengerId: Number(row.PASSENGER_ID), firstName: String(row.FIRST_NAME), lastName: String(row.LAST_NAME),
+      phone: row.PHONE === null ? null : String(row.PHONE), address: row.ADDRESS === null ? null : String(row.ADDRESS),
+      email: String(row.EMAIL), passportOrNic: String(row.NIC_OR_PASSPORT),
+    } : null;
+  } finally { await connection.close(); }
+}
+
+export async function oraclePassengerBookSeat(passengerId: number, tripId: number, seatNumber: string): Promise<number> {
+  return withPassengerTransaction(async (connection) => {
+    const result = await connection.execute('BEGIN passenger_book_seat(:passengerId, :tripId, :seatNumber, :bookingId); END;', {
+      passengerId, tripId, seatNumber,
+      bookingId: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+    });
+    return Number((result.outBinds as { bookingId: number[] }).bookingId[0]);
+  });
+}
+
+export async function oraclePassengerPayBooking(passengerId: number, bookingId: number, amount: number, method: string): Promise<void> {
+  await withPassengerTransaction((connection) => connection.execute(
+    'BEGIN passenger_pay_booking(:passengerId, :bookingId, :amount, :method); END;',
+    { passengerId, bookingId, amount, method },
+  ).then(() => undefined));
+}
+
+export async function oraclePassengerCancelBooking(passengerId: number, bookingId: number): Promise<void> {
+  await withPassengerTransaction((connection) => connection.execute(
+    'BEGIN passenger_cancel_booking(:passengerId, :bookingId); END;', { passengerId, bookingId },
+  ).then(() => undefined));
+}
+
+export async function oraclePassengerSubmitFeedback(passengerId: number, tripId: number, rating: number, comment: string, category: string): Promise<void> {
+  await withPassengerTransaction((connection) => connection.execute(
+    'BEGIN passenger_submit_feedback(:passengerId, :tripId, :rating, :comment, :category); END;',
+    { passengerId, tripId, rating, comment, category },
+  ).then(() => undefined));
+}
+
+export async function oraclePassengerUpdateProfile(passengerId: number, profile: Pick<PassengerProfile, 'firstName' | 'lastName' | 'phone' | 'address'>): Promise<void> {
+  await withPassengerTransaction((connection) => connection.execute(
+    'BEGIN passenger_update_profile(:passengerId, :firstName, :lastName, :phone, :address); END;',
+    { passengerId, ...profile },
+  ).then(() => undefined));
+}
+
 export async function oracleCreate(resource: Resource, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const connection = await (await getPool()).getConnection();
   try {

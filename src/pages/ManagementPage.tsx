@@ -36,7 +36,7 @@ const text = (value: unknown) => String(value ?? '—');
 const money = (value: unknown) => `LKR ${Number(value ?? 0).toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const displayDate = (value: unknown) => {
   if (!value) return '—';
-  const raw = String(value);
+  const raw = value instanceof Date ? value.toISOString() : String(value);
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return raw;
   return raw.includes('T')
@@ -294,6 +294,10 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
   const [success, setSuccess] = useState('');
   const [form, setForm] = useState<Record<string, string>>({});
   const specs = forms[page] ?? [];
+  const recordLabel = ({
+    vehicles: 'Vehicle', drivers: 'Driver', passengers: 'Passenger', trips: 'Trip', bookings: 'Booking',
+    payments: 'Payment', maintenance: 'Maintenance record', feedback: 'Feedback',
+  } as Record<string, string>)[page] ?? meta?.title.slice(0, -1) ?? 'Record';
 
   useEffect(() => {
     let active = true;
@@ -347,7 +351,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
       setForm({});
       setEditingRecord(null);
       setFieldErrors({});
-      setSuccess(`${meta.title.slice(0, -1)} ${editingRecord ? 'updated' : 'saved'} to the backend.`);
+      setSuccess(`${recordLabel} ${editingRecord ? 'updated' : 'saved'} to the backend.`);
       try {
         const refreshed = await loadPage(page);
         setRecords(refreshed.rows);
@@ -376,7 +380,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
       render: (row) => (
         <button
           type="button"
-          aria-label={`Edit ${meta.title.slice(0, -1)} #${row.id}`}
+          aria-label={`Edit ${recordLabel} #${row.id}`}
           onClick={() => editRecord(Number(row.id))}
           className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100"
         >
@@ -397,7 +401,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
       <SearchBar value={search} onChange={setSearch} placeholder={`Search ${meta.title.toLowerCase()}…`} className="max-w-md" />
       <form onSubmit={createRecord} noValidate className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-800">{editingRecord ? `Edit ${meta.title.slice(0, -1)} #${editingRecord.id}` : `Add ${meta.title.slice(0, -1)}`}</h3>
+          <h3 className="text-sm font-semibold text-gray-800">{editingRecord ? `Edit ${recordLabel} #${editingRecord.id}` : `Add ${recordLabel}`}</h3>
           <span className="text-xs text-gray-500">Saved through the backend API</span>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -437,7 +441,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button type="submit" disabled={saving} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">
-            {saving ? 'Saving…' : `${editingRecord ? 'Save' : 'Add'} ${meta.title.slice(0, -1)}`}
+            {saving ? 'Saving…' : `${editingRecord ? 'Save' : 'Add'} ${recordLabel}`}
           </button>
           {editingRecord && <button type="button" onClick={() => { setEditingRecord(null); setForm({}); setFieldErrors({}); setFormError(null); }} className="rounded border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100">Cancel edit</button>}
           {success && <span role="status" className="text-sm text-emerald-700">{success}</span>}

@@ -109,7 +109,6 @@ const Modal: React.FC<ModalProps> = ({
         "
         style={{ backgroundColor: 'rgba(0, 0, 0, 0.55)' }}
         onClick={onClose}           // Click outside → close
-        aria-hidden="true"
       >
         {/* ── Dialog panel ── */}
         <div

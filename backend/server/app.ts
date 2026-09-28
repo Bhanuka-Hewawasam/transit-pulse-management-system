@@ -3,7 +3,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { database, nextId } from './database.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, Route, Vehicle } from '../../src/types/index.js';
 import { mongodbContent, mongodbHealth } from './mongodbAdapter.js';
-import { oracleCreate, oracleHealth, oracleList, oracleUpdateTripStatus } from './oracleAdapter.js';
+import { oracleCreate, oracleHealth, oracleList, oracleUpdate, oracleUpdateTripStatus } from './oracleAdapter.js';
 
 const app = express();
 app.use(cors());
@@ -121,6 +121,34 @@ app.patch('/api/trips/:id/status', async (request, response, next) => {
   trip.status = request.body.status;
   return response.json(trip);
 });
+
+const updateEndpoint = <T extends { id: number }>(resource: keyof typeof database, collection: T[], fields: string[]) => async (request: Request, response: Response, next: NextFunction) => {
+  const id = Number(request.params.id);
+  if (!Number.isInteger(id)) return response.status(400).json({ error: 'Record id must be an integer' });
+  const validationError = required(request.body, fields);
+  if (validationError) return response.status(400).json({ error: validationError });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    try {
+      const updated = await oracleUpdate(resource, id, request.body);
+      return updated ? response.json(updated) : response.status(404).json({ error: 'Record not found' });
+    } catch (error) { return next(error); }
+  }
+  if (process.env.DATABASE_MODE !== 'demo') return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using data endpoints.' });
+  const record = collection.find((item) => item.id === id);
+  if (!record) return response.status(404).json({ error: 'Record not found' });
+  Object.assign(record, request.body);
+  return response.json(record);
+};
+
+app.patch('/api/vehicles/:id', updateEndpoint('vehicles', database.vehicles, ['registrationNumber', 'make', 'model', 'year', 'capacity']));
+app.patch('/api/drivers/:id', updateEndpoint('drivers', database.drivers, ['firstName', 'lastName', 'licenseNumber', 'licenseExpiry']));
+app.patch('/api/routes/:id', updateEndpoint('routes', database.routes, ['routeCode', 'origin', 'destination', 'distanceKm', 'estimatedMinutes', 'fareAmount']));
+app.patch('/api/passengers/:id', updateEndpoint('passengers', database.passengers, ['firstName', 'lastName', 'email', 'passportOrNic']));
+app.patch('/api/trips/:id', updateEndpoint('trips', database.trips, ['routeId', 'vehicleId', 'driverId', 'departureTime', 'arrivalTime', 'availableSeats', 'totalSeats']));
+app.patch('/api/bookings/:id', updateEndpoint('bookings', database.bookings, ['tripId', 'passengerId', 'seatNumber', 'amount']));
+app.patch('/api/payments/:id', updateEndpoint('payments', database.payments, ['bookingId', 'amount']));
+app.patch('/api/maintenance/:id', updateEndpoint('maintenance', database.maintenance, ['vehicleId', 'description', 'scheduledDate']));
+app.patch('/api/feedback/:id', updateEndpoint('feedback', database.feedback, ['passengerId', 'tripId', 'driverId', 'vehicleId', 'rating', 'comment']));
 
 app.use('/api/reports', (_request, response, next) => {
   if (process.env.DATABASE_MODE === 'demo') return next();

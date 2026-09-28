@@ -7,7 +7,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { Plus, MapPin, X } from 'lucide-react';
 
 import type { Route } from '../types';
-import { ApiError, apiGet, apiPost } from '../services/api';
+import { ApiError, apiGet, apiPatch, apiPost } from '../services/api';
 
 import StatusBadge   from '../components/StatusBadge';
 import SearchBar     from '../components/SearchBar';
@@ -122,6 +122,8 @@ const Routes: React.FC = () => {
   const [searchTerm,    setSearchTerm]    = useState('');
   const [activeFilter,  setActiveFilter]  = useState<ActiveFilter>('all');
   const [showAddModal,  setShowAddModal]  = useState(false);
+  const [editingRoute, setEditingRoute] = useState<Route | null>(null);
+  const [saving, setSaving] = useState(false);
   const [formData,      setFormData]      = useState<RouteFormData>(EMPTY_FORM);
   const [formErrors,    setFormErrors]    = useState<Partial<RouteFormData>>({});
 
@@ -155,7 +157,26 @@ const Routes: React.FC = () => {
   // ── Form helpers ──────────────────────────────────────────────────────────
 
   const openAddModal = () => {
+    setEditingRoute(null);
     setFormData(EMPTY_FORM);
+    setFormErrors({});
+    setError(null);
+    setSuccess('');
+    setShowAddModal(true);
+  };
+
+  const openEditModal = (route: Route) => {
+    setEditingRoute(route);
+    setFormData({
+      routeCode: route.routeCode,
+      origin: route.origin,
+      destination: route.destination,
+      stops: [...route.stops],
+      distanceKm: String(route.distanceKm),
+      estimatedMinutes: String(route.estimatedMinutes),
+      fareAmount: String(route.fareAmount),
+      isActive: route.isActive,
+    });
     setFormErrors({});
     setError(null);
     setSuccess('');
@@ -164,6 +185,7 @@ const Routes: React.FC = () => {
 
   const closeModal = () => {
     setShowAddModal(false);
+    setEditingRoute(null);
     setFormErrors({});
   };
 
@@ -194,18 +216,23 @@ const Routes: React.FC = () => {
     return Object.keys(errors).length === 0;
   };
 
-  /** Save a new route through the backend API. */
+  /** Save a route through the backend API. */
   const handleSave = async () => {
     if (!validate()) return;
 
     const parsed = parseForm(formData);
+    setSaving(true);
+    setError(null);
     try {
-      await apiPost<Route>('/routes', parsed);
+      if (editingRoute) await apiPatch<Route>(`/routes/${editingRoute.id}`, parsed);
+      else await apiPost<Route>('/routes', parsed);
       setLocalRoutes(await apiGet<Route[]>('/routes'));
-      setSuccess('Route saved to the backend and list refreshed.');
+      setSuccess(`Route ${editingRoute ? 'updated' : 'saved'} to the backend and list refreshed.`);
       closeModal();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError : new Error('Unable to create route'));
+      setError(requestError instanceof Error ? requestError : new Error('Unable to save route'));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -246,6 +273,11 @@ const Routes: React.FC = () => {
       key:    'isActive',
       label:  'Status',
       render: (r) => <StatusBadge status={r.isActive ? 'active' : 'inactive'} />,
+    },
+    {
+      key: 'actions',
+      label: 'Actions',
+      render: (route) => <button type="button" aria-label={`Edit Route ${route.routeCode}`} onClick={() => openEditModal(route)} className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100">Edit</button>,
     },
   ];
 
@@ -333,7 +365,7 @@ const Routes: React.FC = () => {
       <Modal
         isOpen={showAddModal}
         onClose={closeModal}
-        title="Add New Route"
+        title={editingRoute ? `Edit Route ${editingRoute.routeCode}` : 'Add New Route'}
         size="lg"
       >
         <div className="space-y-4">
@@ -359,7 +391,7 @@ const Routes: React.FC = () => {
           </div>
 
           {/* Row 2: Origin + Destination */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1">
                 Origin <span className="text-red-500">*</span>
@@ -421,7 +453,7 @@ const Routes: React.FC = () => {
           </fieldset>
 
           {/* Row 4: Distance + Duration */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1">
                 Distance (km) <span className="text-red-500">*</span>
@@ -467,7 +499,7 @@ const Routes: React.FC = () => {
           </div>
 
           {/* Row 5: Fare + Active checkbox */}
-          <div className="grid grid-cols-2 gap-3 items-end">
+          <div className="grid grid-cols-1 gap-3 items-end sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1">
                 Fare Amount (LKR) <span className="text-red-500">*</span>
@@ -508,6 +540,7 @@ const Routes: React.FC = () => {
             <button
               type="button"
               onClick={closeModal}
+              disabled={saving}
               className="
                 px-4 py-2 rounded-lg text-sm font-medium
                 text-gray-600 bg-gray-100 hover:bg-gray-200
@@ -525,7 +558,7 @@ const Routes: React.FC = () => {
               "
               style={{ backgroundColor: '#0f2044' }}
             >
-              Add Route
+              {saving ? 'Saving…' : editingRoute ? 'Save Route' : 'Add Route'}
             </button>
           </div>
         </div>

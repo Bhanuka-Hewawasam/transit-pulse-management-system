@@ -3,7 +3,7 @@ import DataTable from '../components/DataTable';
 import SearchBar from '../components/SearchBar';
 import StatusBadge from '../components/StatusBadge';
 import type { Column } from '../components/DataTable';
-import { ApiError, apiEndpoints, apiGet, apiPost } from '../services/api';
+import { ApiError, apiEndpoints, apiGet, apiPatch, apiPost } from '../services/api';
 
 type RecordRow = Record<string, string | number | undefined>;
 type EntityName = keyof typeof apiEndpoints;
@@ -227,7 +227,20 @@ async function loadPage(page: string) {
     ...related.map((resource) => apiGet<Record<string, unknown>[]>(apiEndpoints[resource])),
   ]);
   const lookups: Lookups = Object.fromEntries(related.map((resource, index) => [resource, referenceRows[index]]));
-  return { rows: toRows(page, records, lookups), lookups };
+  return { records, rows: toRows(page, records, lookups), lookups };
+}
+
+function fieldValue(field: FieldSpec, value: unknown): string {
+  if (value === undefined || value === null) return '';
+  const raw = String(value);
+  if (field.type === 'date') return raw.slice(0, 10);
+  if (field.type === 'datetime-local') {
+    const date = new Date(raw);
+    if (!Number.isNaN(date.getTime())) {
+      return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    }
+  }
+  return raw;
 }
 
 function makePayload(page: string, form: Record<string, string>): Record<string, unknown> {
@@ -272,6 +285,8 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [records, setRecords] = useState<RecordRow[]>([]);
+  const [rawRecords, setRawRecords] = useState<Record<string, unknown>[]>([]);
+  const [editingRecord, setEditingRecord] = useState<Record<string, unknown> | null>(null);
   const [lookups, setLookups] = useState<Lookups>({});
   const [error, setError] = useState<ApiError | Error | null>(null);
   const [formError, setFormError] = useState<ApiError | Error | null>(null);
@@ -285,6 +300,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
     loadPage(page).then((result) => {
       if (!active) return;
       setRecords(result.rows);
+      setRawRecords(result.records);
       setLookups(result.lookups);
     }).catch((loadError: Error) => {
       if (active) setError(loadError);
@@ -293,6 +309,16 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
     });
     return () => { active = false; };
   }, [page]);
+
+  const editRecord = (id: number) => {
+    const selected = rawRecords.find((record) => Number(record.id) === id);
+    if (!selected) return;
+    setEditingRecord(selected);
+    setForm(Object.fromEntries(specs.map((field) => [field.name, fieldValue(field, selected[field.name])])));
+    setFieldErrors({});
+    setFormError(null);
+    setSuccess('');
+  };
 
   const createRecord = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -313,13 +339,19 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
 
     setSaving(true);
     try {
-      await apiPost(apiEndpoints[page as EntityName], payload);
+      if (editingRecord) {
+        await apiPatch(`${apiEndpoints[page as EntityName]}/${editingRecord.id}`, payload);
+      } else {
+        await apiPost(apiEndpoints[page as EntityName], payload);
+      }
       setForm({});
+      setEditingRecord(null);
       setFieldErrors({});
-      setSuccess(`${meta.title.slice(0, -1)} saved to the backend.`);
+      setSuccess(`${meta.title.slice(0, -1)} ${editingRecord ? 'updated' : 'saved'} to the backend.`);
       try {
         const refreshed = await loadPage(page);
         setRecords(refreshed.rows);
+        setRawRecords(refreshed.records);
         setLookups(refreshed.lookups);
         setError(null);
       } catch (refreshError) {
@@ -336,6 +368,23 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
     const query = search.trim().toLowerCase();
     return records.filter((row) => !query || Object.values(row).some((value) => text(value).toLowerCase().includes(query)));
   }, [records, search]);
+  const columns: Column<RecordRow>[] = [
+    ...(columnsFor[page] ?? []),
+    {
+      key: 'actions',
+      label: 'Actions',
+      render: (row) => (
+        <button
+          type="button"
+          aria-label={`Edit ${meta.title.slice(0, -1)} #${row.id}`}
+          onClick={() => editRecord(Number(row.id))}
+          className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100"
+        >
+          Edit
+        </button>
+      ),
+    },
+  ];
 
   if (!meta) return <p role="alert" className="rounded-lg bg-amber-50 p-4 text-sm text-amber-800">This module has no management page.</p>;
 
@@ -348,7 +397,7 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
       <SearchBar value={search} onChange={setSearch} placeholder={`Search ${meta.title.toLowerCase()}…`} className="max-w-md" />
       <form onSubmit={createRecord} noValidate className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-800">Add {meta.title.slice(0, -1)}</h3>
+          <h3 className="text-sm font-semibold text-gray-800">{editingRecord ? `Edit ${meta.title.slice(0, -1)} #${editingRecord.id}` : `Add ${meta.title.slice(0, -1)}`}</h3>
           <span className="text-xs text-gray-500">Saved through the backend API</span>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -388,14 +437,15 @@ const ManagementPage: React.FC<{ page: string }> = ({ page }) => {
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button type="submit" disabled={saving} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">
-            {saving ? 'Saving…' : `Add ${meta.title.slice(0, -1)}`}
+            {saving ? 'Saving…' : `${editingRecord ? 'Save' : 'Add'} ${meta.title.slice(0, -1)}`}
           </button>
+          {editingRecord && <button type="button" onClick={() => { setEditingRecord(null); setForm({}); setFieldErrors({}); setFormError(null); }} className="rounded border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100">Cancel edit</button>}
           {success && <span role="status" className="text-sm text-emerald-700">{success}</span>}
         </div>
         {formError && <div role="alert" className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><p>{formError.message}</p>{formError instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{formError.technicalMessage}</code></details>}</div>}
       </form>
       {error && <div role="alert" className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-800"><p>Unable to load {meta.title.toLowerCase()}: {error.message}</p>{error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}</div>}
-      <DataTable<RecordRow> columns={columnsFor[page] ?? []} data={rows} loading={loading} emptyMessage={search ? `No ${meta.title.toLowerCase()} match your search.` : 'No records exist in the connected database.'} />
+      <DataTable<RecordRow> columns={columns} data={rows} loading={loading} emptyMessage={search ? `No ${meta.title.toLowerCase()} match your search.` : 'No records exist in the connected database.'} />
     </div>
   );
 };

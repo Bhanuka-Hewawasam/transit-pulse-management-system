@@ -1,4 +1,4 @@
--- Keep passenger booking counts aligned with confirmed/completed bookings.
+-- Update passenger booking counts.
 CREATE OR REPLACE TRIGGER trg_booking_count
 AFTER INSERT OR UPDATE OF status OR DELETE ON bookings
 FOR EACH ROW

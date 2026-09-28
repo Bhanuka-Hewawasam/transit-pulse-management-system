@@ -5,6 +5,7 @@ const oracleMocks = vi.hoisted(() => ({
   health: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
   updateTripStatus: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ vi.mock('./oracleAdapter.js', () => ({
   oracleHealth: oracleMocks.health,
   oracleList: oracleMocks.list,
   oracleCreate: oracleMocks.create,
+  oracleUpdate: oracleMocks.update,
   oracleUpdateTripStatus: oracleMocks.updateTripStatus,
 }));
 
@@ -99,6 +101,39 @@ describe('SmartMove backend API', () => {
 
     expect(response.status).toBe(201);
     expect(oracleMocks.create).toHaveBeenCalledWith(resource, payload);
+  });
+
+  it.each([
+    ['/api/vehicles/9', 'vehicles', { registrationNumber: 'TEST-9', make: 'Tata', model: 'Bus', year: 2024, capacity: 40 }],
+    ['/api/drivers/9', 'drivers', { firstName: 'Test', lastName: 'Driver', licenseNumber: 'TEST-9', licenseExpiry: '2030-01-01' }],
+    ['/api/routes/9', 'routes', { routeCode: 'TEST-9', origin: 'A', destination: 'B', distanceKm: 10, estimatedMinutes: 20, fareAmount: 50 }],
+    ['/api/passengers/9', 'passengers', { firstName: 'Test', lastName: 'Passenger', email: 'test@example.com', passportOrNic: 'TEST-9' }],
+    ['/api/trips/9', 'trips', { routeId: 1, vehicleId: 1, driverId: 1, departureTime: '2030-01-01T08:00', arrivalTime: '2030-01-01T09:00', availableSeats: 10, totalSeats: 10 }],
+    ['/api/bookings/9', 'bookings', { tripId: 1, passengerId: 1, seatNumber: 'A1', amount: 50 }],
+    ['/api/payments/9', 'payments', { bookingId: 1, amount: 50 }],
+    ['/api/maintenance/9', 'maintenance', { vehicleId: 1, description: 'Inspection', scheduledDate: '2030-01-01' }],
+    ['/api/feedback/9', 'feedback', { passengerId: 1, tripId: 1, driverId: 1, vehicleId: 1, rating: 5, comment: 'Good service' }],
+  ])('routes %s updates to Oracle', async (path, resource, payload) => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.update.mockResolvedValue({ id: 9, ...payload });
+
+    const response = await request(app).patch(path).send(payload);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ id: 9, ...payload });
+    expect(oracleMocks.update).toHaveBeenCalledWith(resource, 9, payload);
+  });
+
+  it('updates demo records and reports missing records', async () => {
+    const current = (await request(app).get('/api/vehicles')).body[0];
+    const update = { ...current, make: 'Updated Make' };
+
+    const response = await request(app).patch(`/api/vehicles/${current.id}`).send(update);
+    const missing = await request(app).patch('/api/vehicles/999999').send(update);
+
+    expect(response.status).toBe(200);
+    expect(response.body.make).toBe('Updated Make');
+    expect(missing.status).toBe(404);
   });
 
   it('returns a clear duplicate-value error from Oracle', async () => {

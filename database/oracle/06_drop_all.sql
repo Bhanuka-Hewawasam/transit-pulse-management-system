@@ -1,24 +1,24 @@
--- =============================================================================
--- SmartMove Transport Solutions
--- FILE: 06_drop_all.sql
--- PURPOSE: Drop all database objects in safe reverse-dependency order.
---          Run this script BEFORE re-running 01_create_tables.sql to start fresh.
---          Children are dropped before parents to honour FK constraints.
--- AUTHOR: SmartMove DBA Team
--- CREATED: 2025-09-24
--- =============================================================================
 
--- NOTE: CASCADE CONSTRAINTS removes all referential-integrity constraints
---       that point TO the table being dropped.
---       PURGE bypasses the Oracle recycle-bin so no flashback is possible.
+
+
+
+
+
+
+
+
+
+
+
+
 
 PROMPT ============================================================
 PROMPT  SmartMove -- Dropping all tables and sequences
 PROMPT ============================================================
 
--- ------------------------------------------------------------
--- STEP 1: Drop leaf / child tables first
--- ------------------------------------------------------------
+
+
+
 
 PROMPT Dropping FEEDBACK ...
 DROP TABLE feedback CASCADE CONSTRAINTS PURGE;
@@ -35,9 +35,9 @@ DROP TABLE maintenance_records CASCADE CONSTRAINTS PURGE;
 PROMPT Dropping ROUTE_STOPS ...
 DROP TABLE route_stops CASCADE CONSTRAINTS PURGE;
 
--- ------------------------------------------------------------
--- STEP 2: Drop mid-level tables (depend on root entities)
--- ------------------------------------------------------------
+
+
+
 
 PROMPT Dropping TRIPS ...
 DROP TABLE trips CASCADE CONSTRAINTS PURGE;
@@ -45,9 +45,9 @@ DROP TABLE trips CASCADE CONSTRAINTS PURGE;
 PROMPT Dropping PASSENGERS ...
 DROP TABLE passengers CASCADE CONSTRAINTS PURGE;
 
--- ------------------------------------------------------------
--- STEP 3: Drop root / parent tables
--- ------------------------------------------------------------
+
+
+
 
 PROMPT Dropping ROUTES ...
 DROP TABLE routes CASCADE CONSTRAINTS PURGE;
@@ -61,9 +61,9 @@ DROP TABLE vehicles CASCADE CONSTRAINTS PURGE;
 PROMPT Dropping SYSTEM_USERS ...
 DROP TABLE system_users CASCADE CONSTRAINTS PURGE;
 
--- ------------------------------------------------------------
--- STEP 4: Drop all sequences
--- ------------------------------------------------------------
+
+
+
 
 PROMPT Dropping sequences ...
 
@@ -79,9 +79,9 @@ DROP SEQUENCE seq_payments_id;
 DROP SEQUENCE seq_maintenance_id;
 DROP SEQUENCE seq_feedback_id;
 
--- ------------------------------------------------------------
--- STEP 5: Drop views (if they exist from 05_views.sql)
--- ------------------------------------------------------------
+
+
+
 
 PROMPT Dropping views ...
 

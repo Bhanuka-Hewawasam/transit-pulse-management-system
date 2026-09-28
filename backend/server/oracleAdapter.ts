@@ -262,6 +262,125 @@ export async function oracleCreate(resource: Resource, input: Record<string, unk
   }
 }
 
+export async function oracleUpdate(resource: Resource, id: number, input: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    let statement: string;
+    let binds: Record<string, unknown>;
+    switch (resource) {
+      case 'vehicles':
+        statement = `UPDATE VEHICLES SET registration_number = :registrationNumber, make = :make, model = :model,
+          year_of_manufacture = :year, vehicle_type = :type, seating_capacity = :capacity, fuel_type = :fuelType,
+          status = :status, last_maintenance_date = :lastMaintenanceDate, next_maintenance_date = :nextMaintenanceDate
+          WHERE vehicle_id = :id`;
+        binds = { registrationNumber: input.registrationNumber, make: input.make, model: input.model,
+          year: integerInRange(input.year ?? input.yearOfManufacture, 'year', 1000, 9999),
+          type: input.type ?? input.vehicleType ?? 'bus', capacity: integerInRange(input.capacity ?? input.seatingCapacity, 'capacity', 1, 999),
+          fuelType: input.fuelType ?? 'diesel', status: input.status ?? 'active',
+          lastMaintenanceDate: optionalDate(input.lastMaintenanceDate), nextMaintenanceDate: optionalDate(input.nextMaintenanceDate), id };
+        break;
+      case 'drivers':
+        statement = `UPDATE DRIVERS SET first_name = :firstName, last_name = :lastName, license_number = :licenseNumber,
+          license_expiry_date = :licenseExpiry, phone = :phone, email = :email, status = :status, joined_date = :joinedDate,
+          total_trips = :totalTrips, rating = :rating WHERE driver_id = :id`;
+        binds = { firstName: input.firstName, lastName: input.lastName, licenseNumber: input.licenseNumber,
+          licenseExpiry: dateValue(input.licenseExpiry ?? input.licenseExpiryDate, 'licenseExpiry'),
+          phone: input.phone ?? null, email: input.email ?? null, status: input.status ?? 'available',
+          joinedDate: optionalDate(input.joinedDate), totalTrips: numberValue(input.totalTrips, 'totalTrips', 0),
+          rating: numberValue(input.rating, 'rating', 0), id };
+        break;
+      case 'routes':
+        statement = `UPDATE ROUTES SET route_code = :routeCode, origin = :origin, destination = :destination,
+          distance_km = :distanceKm, estimated_minutes = :estimatedMinutes, fare_amount = :fareAmount, is_active = :isActive
+          WHERE route_id = :id`;
+        binds = { routeCode: input.routeCode, origin: input.origin, destination: input.destination,
+          distanceKm: numberValue(input.distanceKm, 'distanceKm'), estimatedMinutes: numberValue(input.estimatedMinutes, 'estimatedMinutes'),
+          fareAmount: numberValue(input.fareAmount, 'fareAmount'),
+          isActive: input.isActive === false || input.isActive === 0 || input.isActive === 'false' ? 0 : 1, id };
+        break;
+      case 'passengers':
+        statement = `UPDATE PASSENGERS SET first_name = :firstName, last_name = :lastName, email = :email,
+          phone = :phone, address = :address, nic_or_passport = :passportOrNic WHERE passenger_id = :id`;
+        binds = { firstName: input.firstName, lastName: input.lastName, email: input.email,
+          phone: input.phone ?? null, address: input.address ?? null, passportOrNic: input.passportOrNic ?? input.nicOrPassport, id };
+        break;
+      case 'trips':
+        statement = `UPDATE TRIPS SET route_id = :routeId, vehicle_id = :vehicleId, driver_id = :driverId,
+          departure_time = :departureTime, arrival_time = :arrivalTime, status = :status,
+          available_seats = :availableSeats, total_seats = :totalSeats WHERE trip_id = :id`;
+        binds = { routeId: numberValue(input.routeId, 'routeId'), vehicleId: numberValue(input.vehicleId, 'vehicleId'),
+          driverId: numberValue(input.driverId, 'driverId'), departureTime: dateValue(input.departureTime, 'departureTime'),
+          arrivalTime: dateValue(input.arrivalTime, 'arrivalTime'), status: input.status ?? 'scheduled',
+          availableSeats: numberValue(input.availableSeats, 'availableSeats'), totalSeats: numberValue(input.totalSeats, 'totalSeats'), id };
+        break;
+      case 'bookings':
+        statement = `UPDATE BOOKINGS SET trip_id = :tripId, passenger_id = :passengerId, seat_number = :seatNumber,
+          booking_date = NVL(:bookingDate, SYSDATE), status = :status, amount = :amount WHERE booking_id = :id`;
+        binds = { tripId: numberValue(input.tripId, 'tripId'), passengerId: numberValue(input.passengerId, 'passengerId'),
+          seatNumber: input.seatNumber, bookingDate: optionalDate(input.bookingDate), status: input.status ?? 'confirmed',
+          amount: numberValue(input.amount, 'amount'), id };
+        break;
+      case 'payments':
+        statement = `UPDATE PAYMENTS SET booking_id = :bookingId, amount = :amount, payment_date = NVL(:paymentDate, SYSDATE),
+          payment_method = :method, status = :status, transaction_ref = :transactionRef WHERE payment_id = :id`;
+        binds = { bookingId: numberValue(input.bookingId, 'bookingId'), amount: numberValue(input.amount, 'amount'),
+          paymentDate: optionalDate(input.paymentDate), method: input.method ?? input.paymentMethod ?? null,
+          status: input.status ?? 'pending', transactionRef: input.transactionRef ?? null, id };
+        break;
+      case 'maintenance':
+        statement = `UPDATE MAINTENANCE_RECORDS SET vehicle_id = :vehicleId, maintenance_type = :maintenanceType,
+          description = :description, scheduled_date = :scheduledDate, completed_date = :completedDate, cost = :cost,
+          status = :status, technician_name = :technicianName WHERE maintenance_id = :id`;
+        binds = { vehicleId: numberValue(input.vehicleId, 'vehicleId'), maintenanceType: input.maintenanceType ?? null,
+          description: input.description, scheduledDate: dateValue(input.scheduledDate, 'scheduledDate'),
+          completedDate: optionalDate(input.completedDate), cost: numberValue(input.cost, 'cost', 0),
+          status: input.status ?? 'scheduled', technicianName: input.technicianName ?? null, id };
+        break;
+      case 'feedback':
+        statement = `UPDATE FEEDBACK SET passenger_id = :passengerId, trip_id = :tripId, driver_id = :driverId,
+          vehicle_id = :vehicleId, rating = :rating, feedback_comment = :comment,
+          feedback_date = NVL(:feedbackDate, SYSDATE), category = :category WHERE feedback_id = :id`;
+        binds = { passengerId: numberValue(input.passengerId, 'passengerId'), tripId: numberValue(input.tripId, 'tripId'),
+          driverId: numberValue(input.driverId, 'driverId'), vehicleId: numberValue(input.vehicleId, 'vehicleId'),
+          rating: numberValue(input.rating, 'rating'), comment: input.comment ?? input.feedbackComment ?? null,
+          feedbackDate: optionalDate(input.feedbackDate), category: input.category ?? 'general', id };
+        break;
+    }
+
+    const result = await connection.execute(statement, binds as oracledb.BindParameters);
+    if (!result.rowsAffected) {
+      await connection.rollback();
+      return null;
+    }
+    if (resource === 'routes') {
+      await connection.execute('DELETE FROM ROUTE_STOPS WHERE route_id = :id', { id });
+      for (const [index, stopName] of routeStops(input.stops).entries()) {
+        await connection.execute(
+          `INSERT INTO ROUTE_STOPS (stop_id, route_id, stop_name, stop_order)
+           VALUES (SEQ_STOPS_ID.NEXTVAL, :routeId, :stopName, :stopOrder)`,
+          { routeId: id, stopName, stopOrder: index + 1 },
+        );
+      }
+    }
+    const updated = await connection.execute<Record<string, unknown>>(
+      `SELECT * FROM ${tableMap[resource]} WHERE ${primaryKeyMap[resource]} = :id`,
+      { id },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const row = updated.rows?.[0];
+    if (!row) throw new Error(`${tableMap[resource]} record was updated but could not be read back`);
+    const record = mapRow(resource, row);
+    if (resource === 'routes') record.stops = routeStops(input.stops);
+    await connection.commit();
+    return record;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    await connection.close();
+  }
+}
+
 export async function oracleUpdateTripStatus(id: number, status: string): Promise<Record<string, unknown> | null> {
   const connection = await (await getPool()).getConnection();
   try {

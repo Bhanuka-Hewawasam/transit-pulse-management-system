@@ -16,6 +16,16 @@ const oracleMocks = vi.hoisted(() => ({
   passengerCancelBooking: vi.fn(),
   passengerSubmitFeedback: vi.fn(),
   passengerUpdateProfile: vi.fn(),
+  driverExists: vi.fn(),
+  driverSummary: vi.fn(),
+  driverTrips: vi.fn(),
+  driverManifest: vi.fn(),
+  driverVehicle: vi.fn(),
+  driverFeedback: vi.fn(),
+  driverProfile: vi.fn(),
+  driverStartTrip: vi.fn(),
+  driverCompleteTrip: vi.fn(),
+  driverUpdateProfile: vi.fn(),
   updateTripStatus: vi.fn(),
 }));
 
@@ -40,6 +50,16 @@ vi.mock('./oracleAdapter.js', () => ({
   oraclePassengerCancelBooking: oracleMocks.passengerCancelBooking,
   oraclePassengerSubmitFeedback: oracleMocks.passengerSubmitFeedback,
   oraclePassengerUpdateProfile: oracleMocks.passengerUpdateProfile,
+  oracleDriverExists: oracleMocks.driverExists,
+  oracleDriverSummary: oracleMocks.driverSummary,
+  oracleDriverTrips: oracleMocks.driverTrips,
+  oracleDriverManifest: oracleMocks.driverManifest,
+  oracleDriverVehicle: oracleMocks.driverVehicle,
+  oracleDriverFeedback: oracleMocks.driverFeedback,
+  oracleDriverProfile: oracleMocks.driverProfile,
+  oracleDriverStartTrip: oracleMocks.driverStartTrip,
+  oracleDriverCompleteTrip: oracleMocks.driverCompleteTrip,
+  oracleDriverUpdateProfile: oracleMocks.driverUpdateProfile,
   oracleUpdateTripStatus: oracleMocks.updateTripStatus,
 }));
 
@@ -386,6 +406,172 @@ describe('SmartMove backend API', () => {
       database.feedback.splice(0, database.feedback.length, ...originalFeedback);
       Object.assign(trip, originalTrip);
       for (const item of database.passengers) item.totalBookings = originalCounts.get(item.id) ?? item.totalBookings;
+    }
+  });
+
+  it('requires an acting driver and uses only the header for Oracle profile access', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    const driver = database.drivers[0];
+    const otherDriver = database.drivers[1];
+    oracleMocks.driverExists.mockResolvedValue(true);
+    oracleMocks.driverProfile.mockResolvedValue({ driverId: driver.id, firstName: 'Kamal', lastName: 'Perera', phone: '071-000-0000', email: 'kamal@example.com', licenseNumber: driver.licenseNumber, licenseExpiry: driver.licenseExpiry, status: 'available', rating: 4.7, totalTrips: 312 });
+    oracleMocks.driverUpdateProfile.mockResolvedValue(undefined);
+
+    const missing = await request(app).get('/api/driver/profile');
+    const invalid = await request(app).get('/api/driver/profile').set('X-Driver-Id', 'nope');
+    const profile = await request(app).put('/api/driver/profile').set('X-Driver-Id', String(driver.id)).send({ driverId: otherDriver.id, phone: '071-000-0000', email: 'kamal@example.com' });
+
+    expect(missing.status).toBe(400);
+    expect(invalid.status).toBe(400);
+    expect(profile.status).toBe(200);
+    expect(oracleMocks.driverExists).toHaveBeenCalledWith(driver.id);
+    expect(oracleMocks.driverUpdateProfile).toHaveBeenCalledWith(driver.id, '071-000-0000', 'kamal@example.com');
+    expect(oracleMocks.driverUpdateProfile).not.toHaveBeenCalledWith(otherDriver.id, expect.anything(), expect.anything());
+  });
+
+  it('dispatches driver trips and maps Oracle application errors to HTTP 400', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.driverExists.mockResolvedValue(true);
+    oracleMocks.driverTrips.mockResolvedValue([{ tripId: 14, canStart: true }]);
+    const trips = await request(app).get('/api/driver/trips?filter=upcoming').set('X-Driver-Id', '3');
+    expect(trips.status).toBe(200);
+    expect(oracleMocks.driverTrips).toHaveBeenCalledWith(3, 'upcoming');
+
+    oracleMocks.driverStartTrip.mockRejectedValue(Object.assign(new Error('ORA-20205: Driver already has another in-progress trip'), { code: 'ORA-20205', errorNum: 20205 }));
+    const rejected = await request(app).post('/api/driver/trips/14/start').set('X-Driver-Id', '3').send({ driverId: 999 });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toBe('Driver already has another in-progress trip');
+    expect(oracleMocks.driverStartTrip).toHaveBeenCalledWith(3, 14);
+  });
+
+  it('enforces driver trip ownership, start window, concurrency, manifest and completion in demo mode', async () => {
+    const driver = database.drivers[0];
+    const trip = database.trips.find((item) => item.driverId === driver.id)!;
+    const otherTrip = database.trips.find((item) => item.driverId !== driver.id)!;
+    const otherDriver = database.drivers.find((item) => item.id === otherTrip.driverId)!;
+    const secondTrip = database.trips.find((item) => item.driverId === driver.id && item.id !== trip.id)!;
+    const originalTrips = [trip, secondTrip].map((item) => ({ id: item.id, status: item.status, departureTime: item.departureTime, arrivalTime: item.arrivalTime }));
+    const originalOtherStatus = otherTrip.status;
+    const originalBookingStatuses = database.bookings.map((booking) => ({ id: booking.id, status: booking.status }));
+    const originalDriver = { status: driver.status, totalTrips: driver.totalTrips };
+    try {
+      trip.status = 'scheduled';
+      trip.departureTime = new Date(Date.now() + 31 * 60 * 1000).toISOString();
+      secondTrip.status = 'scheduled';
+      secondTrip.departureTime = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const header = { 'X-Driver-Id': String(driver.id) };
+      const tooEarly = await request(app).post(`/api/driver/trips/${trip.id}/start`).set(header);
+      expect(tooEarly.status).toBe(400);
+      expect(tooEarly.body.error).toMatch(/within 30 minutes/);
+
+      trip.departureTime = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const started = await request(app).post(`/api/driver/trips/${trip.id}/start`).set(header).send({ driverId: otherDriver.id });
+      expect(started.status).toBe(200);
+      expect(trip.status).toBe('in_progress');
+      expect(driver.status).toBe('on_trip');
+
+      const secondStart = await request(app).post(`/api/driver/trips/${secondTrip.id}/start`).set(header);
+      expect(secondStart.status).toBe(400);
+      expect(secondStart.body.error).toMatch(/another in-progress trip/);
+
+      const manifest = await request(app).get(`/api/driver/trips/${trip.id}/manifest`).set(header);
+      const foreignManifest = await request(app).get(`/api/driver/trips/${otherTrip.id}/manifest`).set(header);
+      expect(manifest.status).toBe(200);
+      expect(foreignManifest.status).toBe(404);
+      expect(manifest.body.every((row: { passengerId: number }) => database.bookings.some((booking) => booking.tripId === trip.id && booking.passengerId === row.passengerId))).toBe(true);
+
+      const inProgress = await request(app).get('/api/driver/trips?filter=in_progress').set(header);
+      expect(inProgress.body).toEqual(expect.arrayContaining([expect.objectContaining({ tripId: trip.id, canComplete: true })]));
+      const completed = await request(app).post(`/api/driver/trips/${trip.id}/complete`).set(header);
+      expect(completed.status).toBe(200);
+      expect(trip.status).toBe('completed');
+      expect(database.bookings.filter((booking) => booking.tripId === trip.id && ['confirmed', 'completed'].includes(booking.status)).every((booking) => booking.status === 'completed')).toBe(true);
+      expect(driver.totalTrips).toBe(originalDriver.totalTrips + 1);
+      expect(driver.status).toBe('available');
+    } finally {
+      for (const snapshot of originalTrips) {
+        const item = database.trips.find((candidate) => candidate.id === snapshot.id)!;
+        item.status = snapshot.status;
+        item.departureTime = snapshot.departureTime;
+        item.arrivalTime = snapshot.arrivalTime;
+      }
+      otherTrip.status = originalOtherStatus;
+      for (const snapshot of originalBookingStatuses) {
+        const item = database.bookings.find((candidate) => candidate.id === snapshot.id);
+        if (item) item.status = snapshot.status as typeof item.status;
+      }
+      driver.status = originalDriver.status;
+      driver.totalTrips = originalDriver.totalTrips;
+    }
+  });
+
+  it('requires an acting driver and maps Oracle driver procedure errors', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.driverExists.mockResolvedValue(true);
+    oracleMocks.driverSummary.mockResolvedValue({ driverId: 3, firstName: 'Test', lastName: 'Driver', status: 'available', todayTrips: 0, upcomingTrips: 2, completedTrips: 1, averageRating: 4.5, ratingCount: 2 });
+    oracleMocks.driverStartTrip.mockRejectedValue(Object.assign(new Error('ORA-20205: Driver already has another in-progress trip'), { code: 'ORA-20205', errorNum: 20205 }));
+
+    const missingHeader = await request(app).get('/api/driver/summary');
+    const summary = await request(app).get('/api/driver/summary').set('X-Driver-Id', '3');
+    const rejectedStart = await request(app).post('/api/driver/trips/14/start').set('X-Driver-Id', '3').send({ driverId: 99 });
+
+    expect(missingHeader.status).toBe(400);
+    expect(summary.status).toBe(200);
+    expect(oracleMocks.driverExists).toHaveBeenCalledWith(3);
+    expect(oracleMocks.driverSummary).toHaveBeenCalledWith(3);
+    expect(rejectedStart.status).toBe(400);
+    expect(rejectedStart.body.error).toBe('Driver already has another in-progress trip');
+    expect(oracleMocks.driverStartTrip).toHaveBeenCalledWith(3, 14);
+  });
+
+  it('enforces driver trip timing, single active trip, scoped manifests, and completion in demo mode', async () => {
+    const driver = database.drivers[0];
+    const trip = database.trips.find((item) => item.driverId === driver.id)!;
+    const secondTrip = database.trips.find((item) => item.driverId === driver.id && item.id !== trip.id)!;
+    const foreignTrip = database.trips.find((item) => item.driverId !== driver.id)!;
+    const originalTrips = [trip, secondTrip, foreignTrip].map((item) => ({ id: item.id, status: item.status, departureTime: item.departureTime, arrivalTime: item.arrivalTime }));
+    const originalBookings = database.bookings.map((booking) => ({ id: booking.id, status: booking.status }));
+    const originalDriver = { status: driver.status, totalTrips: driver.totalTrips };
+    try {
+      trip.status = 'scheduled';
+      trip.departureTime = new Date(Date.now() + 31 * 60 * 1000).toISOString();
+      secondTrip.status = 'scheduled';
+      secondTrip.departureTime = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const header = { 'X-Driver-Id': String(driver.id) };
+      const tooEarly = await request(app).post(`/api/driver/trips/${trip.id}/start`).set(header);
+      expect(tooEarly.status).toBe(400);
+      expect(tooEarly.body.error).toMatch(/within 30 minutes/);
+
+      trip.departureTime = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const started = await request(app).post(`/api/driver/trips/${trip.id}/start`).set(header).send({ driverId: foreignTrip.driverId });
+      expect(started.status).toBe(200);
+      expect(trip.status).toBe('in_progress');
+      expect(driver.status).toBe('on_trip');
+      const secondStart = await request(app).post(`/api/driver/trips/${secondTrip.id}/start`).set(header);
+      expect(secondStart.status).toBe(400);
+      expect(secondStart.body.error).toMatch(/another in-progress trip/);
+
+      const ownManifest = await request(app).get(`/api/driver/trips/${trip.id}/manifest`).set(header);
+      const foreignManifest = await request(app).get(`/api/driver/trips/${foreignTrip.id}/manifest`).set(header);
+      expect(ownManifest.status).toBe(200);
+      expect(foreignManifest.status).toBe(404);
+
+      const completed = await request(app).post(`/api/driver/trips/${trip.id}/complete`).set(header);
+      expect(completed.status).toBe(200);
+      expect(trip.status).toBe('completed');
+      expect(database.bookings.filter((booking) => booking.tripId === trip.id && ['confirmed', 'completed'].includes(booking.status)).every((booking) => booking.status === 'completed')).toBe(true);
+      expect(driver.totalTrips).toBe(originalDriver.totalTrips + 1);
+      expect(driver.status).toBe('available');
+    } finally {
+      for (const snapshot of originalTrips) {
+        const item = database.trips.find((candidate) => candidate.id === snapshot.id)!;
+        Object.assign(item, { status: snapshot.status, departureTime: snapshot.departureTime, arrivalTime: snapshot.arrivalTime });
+      }
+      for (const snapshot of originalBookings) {
+        const booking = database.bookings.find((item) => item.id === snapshot.id);
+        if (booking) booking.status = snapshot.status as typeof booking.status;
+      }
+      Object.assign(driver, originalDriver);
     }
   });
 

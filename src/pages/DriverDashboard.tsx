@@ -1,104 +1,315 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowRight, CalendarDays, CarFront, CheckCircle2, Clock3, MessageSquareText, Star, Users } from 'lucide-react';
 import DataTable from '../components/DataTable';
+import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
-import type { Column } from '../components/DataTable';
-import { ApiError, apiGet, apiPatch } from '../services/api';
-import type { Booking, Driver, Feedback, Passenger, Route, Trip, Vehicle } from '../types';
+import { ApiError, API_BASE_URL, apiGet } from '../services/api';
+import type { Driver } from '../types';
 
-type TripRow = { id: number; route: string; departure: string; vehicle: string; passengers: number; seats: string; status: string };
-const displayDate = (value: string) => new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+type DriverTab = 'trips' | 'vehicle' | 'feedback' | 'profile';
+type TripFilter = 'upcoming' | 'in_progress' | 'completed';
+type DriverSummary = {
+  driverId: number; firstName: string; lastName: string; status: string; licenseExpiry: string;
+  todayTrips: number; upcomingTrips: number; completedTrips: number; averageRating: number | null; ratingCount: number;
+};
+type DriverTrip = {
+  tripId: number; routeCode: string; origin: string; destination: string; departureTime: string; arrivalTime: string;
+  status: string; availableSeats: number; totalSeats: number; vehicleRegistration: string;
+  seatsBooked: number; canStart: boolean; canComplete: boolean;
+};
+type ManifestPassenger = { bookingId: number; passengerId: number; passengerName: string; phone: string | null; seatNumber: string; bookingStatus: string; paymentStatus: string };
+type DriverVehicle = { vehicleId: number; registrationNumber: string; make: string; model: string; vehicleType: string; seatingCapacity: number; fuelType: string; status: string; nextMaintenanceDate: string | null };
+type DriverFeedback = { averageRating: number | null; ratingCount: number; recentComments: Array<{ feedbackId: number; tripId: number; rating: number; comment: string | null; feedbackDate: string | null }> };
+type DriverProfile = { driverId: number; firstName: string; lastName: string; phone: string | null; email: string | null; licenseNumber: string; licenseExpiry: string; status: string; rating: number; totalTrips: number };
+type Toast = { kind: 'success' | 'error'; message: string };
+type ConfirmAction = { kind: 'start' | 'complete'; trip: DriverTrip };
+
+const inputClass = 'w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-100';
+const formatDate = (value?: string | null) => value ? new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+const formatDay = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+const routeTitle = (trip: Pick<DriverTrip, 'origin' | 'destination' | 'routeCode'>) => `${trip.routeCode} · ${trip.origin} to ${trip.destination}`;
+const moneylessRating = (rating: number | null) => rating === null ? 'No ratings' : `${rating.toFixed(2)}/5`;
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+async function driverApi<T>(driverId: string, path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set('X-Driver-Id', driverId);
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`, { ...init, headers });
+  } catch (error) {
+    throw new ApiError('The backend could not be reached. Check the connection and try again.', 0, error instanceof Error ? error.message : 'Network request failed');
+  }
+  let body: unknown;
+  try { body = await response.json(); } catch { body = undefined; }
+  if (!response.ok) {
+    const message = typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string' ? body.error : `Request failed with status ${response.status}`;
+    throw new ApiError(message, response.status, message);
+  }
+  return body as T;
+}
+
+const FocusTrap: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = () => Array.from(container.current?.querySelectorAll<HTMLElement>(focusableSelector) ?? []);
+    focusable()[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const elements = focusable();
+      if (!elements.length) { event.preventDefault(); return; }
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !elements.includes(document.activeElement as HTMLElement))) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !elements.includes(document.activeElement as HTMLElement))) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => { document.removeEventListener('keydown', onKeyDown); previous?.focus(); };
+  }, []);
+  return <div ref={container}>{children}</div>;
+};
+
+const EmptyState: React.FC<{ icon: React.ReactNode; message: string }> = ({ icon, message }) => <div className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white p-5 text-center text-gray-500"><span className="text-blue-800">{icon}</span><p className="text-sm">{message}</p></div>;
+const SummaryCard: React.FC<{ icon: React.ReactNode; label: string; value: string | number }> = ({ icon, label, value }) => <article className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium text-gray-600">{label}</span><span className="rounded-md bg-blue-50 p-2 text-blue-800">{icon}</span></div><p className="mt-3 text-2xl font-bold text-gray-900">{value}</p></article>;
+const RatingStars: React.FC<{ rating: number | null; label: string }> = ({ rating, label }) => <span className="inline-flex items-center gap-1" aria-label={label}>{[1, 2, 3, 4, 5].map((value) => <Star key={value} size={15} className={rating !== null && rating >= value ? 'text-amber-500' : 'text-gray-300'} fill={rating !== null && rating >= value ? 'currentColor' : 'none'} />)}</span>;
 
 const DriverDashboard: React.FC = () => {
-  const [drivers, setDrivers] = useState<Driver[]>([]);
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [routes, setRoutes] = useState<Route[]>([]);
-  const [passengers, setPassengers] = useState<Passenger[]>([]);
-  const [bookings, setBookings] = useState<Booking[]>([]);
-  const [feedback, setFeedback] = useState<Feedback[]>([]);
-  const [driverId, setDriverId] = useState('');
   const [mode, setMode] = useState<'oracle' | 'demo' | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [driverId, setDriverId] = useState('');
+  const [summary, setSummary] = useState<DriverSummary | null>(null);
+  const [profile, setProfile] = useState<DriverProfile | null>(null);
+  const [profileDraft, setProfileDraft] = useState({ phone: '', email: '' });
+  const [trips, setTrips] = useState<Record<TripFilter, DriverTrip[]>>({ upcoming: [], in_progress: [], completed: [] });
+  const [vehicle, setVehicle] = useState<DriverVehicle | null>(null);
+  const [feedback, setFeedback] = useState<DriverFeedback>({ averageRating: null, ratingCount: 0, recentComments: [] });
+  const [manifest, setManifest] = useState<ManifestPassenger[]>([]);
+  const [manifestLoading, setManifestLoading] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [updatingTrip, setUpdatingTrip] = useState<number | null>(null);
+  const [bootstrapLoading, setBootstrapLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [savingTripId, setSavingTripId] = useState<number | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [activeTab, setActiveTab] = useState<DriverTab>('trips');
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+  const [manifestTrip, setManifestTrip] = useState<DriverTrip | null>(null);
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let active = true;
-    Promise.all([
-      apiGet<Driver[]>('/drivers'), apiGet<Trip[]>('/trips'), apiGet<Vehicle[]>('/vehicles'),
-      apiGet<Route[]>('/routes'), apiGet<Passenger[]>('/passengers'), apiGet<Booking[]>('/bookings'),
-      apiGet<Feedback[]>('/feedback'), apiGet<{ mode: 'oracle' | 'demo' }>('/health/databases'),
-    ]).then(([driverRows, tripRows, vehicleRows, routeRows, passengerRows, bookingRows, feedbackRows, health]) => {
+    apiGet<{ mode: 'oracle' | 'demo' }>('/health/databases').then(async (health) => {
       if (!active) return;
-      setDrivers(driverRows); setTrips(tripRows); setVehicles(vehicleRows); setRoutes(routeRows);
-      setPassengers(passengerRows); setBookings(bookingRows); setFeedback(feedbackRows); setMode(health.mode);
-    }).catch((requestError: Error) => {
-      if (active) setError(requestError);
-    }).finally(() => {
-      if (active) setLoading(false);
-    });
+      setMode(health.mode);
+      if (health.mode === 'demo') setDrivers(await apiGet<Driver[]>('/drivers'));
+    }).catch((error: Error) => { if (active) setToast({ kind: 'error', message: error.message }); })
+      .finally(() => { if (active) setBootstrapLoading(false); });
     return () => { active = false; };
-  }, [reload]);
+  }, []);
 
-  const assignedTrips = useMemo(() => trips.filter((trip) => driverId && trip.driverId === Number(driverId)), [trips, driverId]);
-  const selectedDriver = drivers.find((driver) => driver.id === Number(driverId));
-  const assignedVehicle = vehicles.find((vehicle) => vehicle.id === assignedTrips[0]?.vehicleId);
-  const driverFeedback = feedback.filter((item) => driverId && item.driverId === Number(driverId));
-  const tripRows: TripRow[] = assignedTrips.map((trip) => {
-    const route = routes.find((item) => item.id === trip.routeId);
-    const vehicle = vehicles.find((item) => item.id === trip.vehicleId);
-    return {
-      id: trip.id,
-      route: route ? `${route.routeCode} · ${route.origin} to ${route.destination}` : `Route #${trip.routeId}`,
-      departure: displayDate(trip.departureTime), vehicle: vehicle?.registrationNumber ?? `Vehicle #${trip.vehicleId}`,
-      passengers: bookings.filter((booking) => booking.tripId === trip.id && booking.status !== 'cancelled').length,
-      seats: `${trip.availableSeats}/${trip.totalSeats}`, status: trip.status,
-    };
-  });
-
-  const updateStatus = async (tripIdToUpdate: number, status: Trip['status']) => {
-    setError(null); setUpdatingTrip(tripIdToUpdate);
-    try {
-      await apiPatch<Trip>(`/trips/${tripIdToUpdate}/status`, { status });
-      setTrips(await apiGet<Trip[]>('/trips'));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError : new Error('Unable to update trip status.'));
-    } finally {
-      setUpdatingTrip(null);
+  useEffect(() => {
+    if (!driverId || !mode) {
+      setSummary(null); setProfile(null); setVehicle(null); setFeedback({ averageRating: null, ratingCount: 0, recentComments: [] });
+      setTrips({ upcoming: [], in_progress: [], completed: [] });
+      return;
     }
+    let active = true;
+    setLoading(true);
+    setToast(null);
+    Promise.all([
+      driverApi<DriverSummary>(driverId, '/driver/summary'),
+      driverApi<DriverTrip[]>(driverId, '/driver/trips?filter=upcoming'),
+      driverApi<DriverTrip[]>(driverId, '/driver/trips?filter=in_progress'),
+      driverApi<DriverTrip[]>(driverId, '/driver/trips?filter=completed'),
+      driverApi<DriverVehicle | null>(driverId, '/driver/vehicle'),
+      driverApi<DriverFeedback>(driverId, '/driver/feedback-summary'),
+      driverApi<DriverProfile>(driverId, '/driver/profile'),
+    ]).then(([summaryResult, upcoming, inProgress, completed, vehicleResult, feedbackResult, profileResult]) => {
+      if (!active) return;
+      setSummary(summaryResult);
+      setTrips({ upcoming, in_progress: inProgress, completed });
+      setVehicle(vehicleResult);
+      setFeedback(feedbackResult);
+      setProfile(profileResult);
+      setProfileDraft({ phone: profileResult.phone ?? '', email: profileResult.email ?? '' });
+    }).catch((error: Error) => {
+      if (active) setToast({ kind: 'error', message: error.message });
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [driverId, mode, reload]);
+
+  const selectDriver = (value: string) => {
+    setDriverId(value); setSummary(null); setProfile(null); setVehicle(null); setManifest([]);
+    setToast(null); setErrors({});
   };
 
-  const columns: Column<TripRow>[] = [
-    { key: 'route', label: 'Route' }, { key: 'departure', label: 'Departure' }, { key: 'vehicle', label: 'Assigned vehicle' },
-    { key: 'passengers', label: 'Passengers' }, { key: 'seats', label: 'Available / total seats' },
-    { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} type="trip" /> },
-    { key: 'update', label: 'Update status', render: (row) => <select value={row.status} disabled={updatingTrip === row.id} onChange={(event) => updateStatus(row.id, event.target.value as Trip['status'])} className="rounded border border-gray-300 bg-white px-2 py-1 text-xs" aria-label={`Update trip ${row.id}`}><option value="scheduled">Scheduled</option><option value="in_progress">In progress</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select> },
+  const refreshDriver = () => setReload((value) => value + 1);
+
+  const openManifest = async (trip: DriverTrip) => {
+    setManifestTrip(trip); setManifest([]); setManifestLoading(true);
+    try { setManifest(await driverApi<ManifestPassenger[]>(driverId, `/driver/trips/${trip.tripId}/manifest`)); }
+    catch (error) { setToast({ kind: 'error', message: error instanceof Error ? error.message : 'Passenger manifest could not be loaded.' }); }
+    finally { setManifestLoading(false); }
+  };
+
+  const confirmTripAction = async () => {
+    if (!confirmAction) return;
+    const action = confirmAction;
+    setSavingTripId(action.trip.tripId);
+    try {
+      await driverApi(driverId, `/driver/trips/${action.trip.tripId}/${action.kind}`, { method: 'POST' });
+      setConfirmAction(null);
+      setToast({ kind: 'success', message: action.kind === 'start' ? 'Trip started.' : 'Trip completed.' });
+      refreshDriver();
+    } catch (error) {
+      setToast({ kind: 'error', message: error instanceof Error ? error.message : 'Trip could not be updated.' });
+    } finally { setSavingTripId(null); }
+  };
+
+  const saveProfile = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextErrors: Record<string, string> = {};
+    if (profileDraft.phone.length > 20) nextErrors.phone = 'Phone must be 20 characters or fewer.';
+    if (profileDraft.email.length > 100) nextErrors.email = 'Email must be 100 characters or fewer.';
+    if (profileDraft.email && !emailPattern.test(profileDraft.email)) nextErrors.email = 'Enter a valid email address.';
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length) return;
+    setSaving(true);
+    try {
+      const saved = await driverApi<DriverProfile>(driverId, '/driver/profile', { method: 'PUT', body: JSON.stringify({ phone: profileDraft.phone.trim() || null, email: profileDraft.email.trim() || null }) });
+      setProfile(saved);
+      setToast({ kind: 'success', message: 'Driver profile saved.' });
+    } catch (error) { setToast({ kind: 'error', message: error instanceof Error ? error.message : 'Profile could not be saved.' }); }
+    finally { setSaving(false); }
+  };
+
+  const tripsFor = (filter: TripFilter) => trips[filter];
+  const todayTrips = summary?.todayTrips ?? 0;
+  const upcomingTrips = summary?.upcomingTrips ?? tripsFor('upcoming').length;
+  const completedTrips = summary?.completedTrips ?? tripsFor('completed').length;
+  const averageRating = feedback.averageRating;
+  const tabs: Array<{ id: DriverTab; label: string }> = [
+    { id: 'trips', label: 'My trips' }, { id: 'vehicle', label: 'Vehicle' },
+    { id: 'feedback', label: 'Feedback' }, { id: 'profile', label: 'Profile' },
   ];
+
+  const tripCard = (trip: DriverTrip) => <article key={trip.tripId} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><div className="flex items-center gap-2 text-lg font-semibold text-gray-900"><span>{trip.origin}</span><ArrowRight size={17} className="text-blue-800" /><span>{trip.destination}</span></div><p className="mt-1 text-xs text-gray-500">{trip.routeCode}</p></div>
+      <StatusBadge status={trip.status} type="trip" />
+    </div>
+    <div className="mt-4 grid gap-2 text-sm text-gray-700 sm:grid-cols-2">
+      <p className="flex items-start gap-2"><CalendarDays size={16} className="mt-0.5 shrink-0 text-blue-800" />{formatDate(trip.departureTime)}</p>
+      <p className="flex items-start gap-2"><CarFront size={16} className="mt-0.5 shrink-0 text-blue-800" />{trip.vehicleRegistration}</p>
+      <p className="flex items-start gap-2"><Users size={16} className="mt-0.5 shrink-0 text-blue-800" />{trip.seatsBooked} / {trip.totalSeats} seats booked</p>
+    </div>
+    <div className="mt-4 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
+      {trip.canStart && <button type="button" onClick={() => setConfirmAction({ kind: 'start', trip })} disabled={savingTripId === trip.tripId} className="rounded bg-blue-800 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:opacity-60">Start trip</button>}
+      {trip.canComplete && <button type="button" onClick={() => setConfirmAction({ kind: 'complete', trip })} disabled={savingTripId === trip.tripId} className="rounded bg-blue-800 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:opacity-60">Complete trip</button>}
+      <button type="button" onClick={() => void openManifest(trip)} className="rounded border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">View passengers</button>
+    </div>
+  </article>;
+
+  const tripSection = (title: string, filter: TripFilter, icon: React.ReactNode) => <section className="space-y-3" aria-labelledby={`driver-${filter}-heading`}>
+    <div className="flex items-center gap-2"><span className="text-blue-800">{icon}</span><h3 id={`driver-${filter}-heading`} className="font-semibold text-gray-900">{title}</h3><span className="text-xs text-gray-500">{tripsFor(filter).length}</span></div>
+    {tripsFor(filter).length ? <div className="grid gap-3 lg:grid-cols-2">{tripsFor(filter).map(tripCard)}</div> : <EmptyState icon={icon} message={`No ${title.toLowerCase()} trips.`} />}
+  </section>;
+
+  const expiryDays = profile ? Math.ceil((new Date(profile.licenseExpiry).getTime() - Date.now()) / 86_400_000) : null;
+  const maintenanceDays = vehicle?.nextMaintenanceDate ? Math.ceil((new Date(vehicle.nextMaintenanceDate).getTime() - Date.now()) / 86_400_000) : null;
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-bold text-gray-900">Driver Dashboard</h1>
-        <p className="mt-1 text-sm text-gray-600">Choose a driver record to view assigned trips, passengers, and feedback.</p>
-        <p className="mt-2 text-xs text-gray-500" role="status">Application mode: {mode === 'oracle' ? 'Oracle' : mode === 'demo' ? 'Demo' : 'Checking'}</p>
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-blue-800">SmartMove driver portal</p>
+          <h1 className="mt-1 text-2xl font-bold text-gray-900">{summary ? `Welcome, ${summary.firstName}` : 'Driver Dashboard'}</h1>
+          <p className="mt-1 text-sm text-gray-600">Your trips, vehicle, feedback, and profile.</p>
+          {summary && <div className="mt-3 flex flex-wrap items-center gap-3"><StatusBadge status={summary.status} type="driver" /><span className="text-sm font-medium text-gray-700">Live rating {moneylessRating(averageRating)}</span><RatingStars rating={averageRating} label={`Live average rating ${moneylessRating(averageRating)}`} /><span className="text-xs text-gray-500">{feedback.ratingCount} rating(s)</span></div>}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-500" role="status">{mode === 'oracle' ? 'Oracle records' : mode === 'demo' ? 'Demo records' : 'Connecting'}</span>
+          {mode === 'demo' ? <select value={driverId} onChange={(event) => selectDriver(event.target.value)} className={`${inputClass} w-64`} aria-label="Driver profile"><option value="">Select driver</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.firstName} {driver.lastName} · #{driver.id}</option>)}</select>
+            : <input type="number" min="1" step="1" value={driverId} onChange={(event) => selectDriver(event.target.value)} className={`${inputClass} w-44`} aria-label="Acting driver ID" placeholder="Driver ID" />}
+        </div>
       </header>
-      <label className="block max-w-md space-y-1 text-sm font-medium text-gray-700"><span>Driver profile</span><select value={driverId} onChange={(event) => setDriverId(event.target.value)} className="w-full rounded border border-gray-300 bg-white px-3 py-2" aria-label="Driver profile"><option value="">Select a driver</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.firstName} {driver.lastName} · #{driver.id}</option>)}</select></label>
-      {loading && <p className="rounded bg-blue-50 p-3 text-sm text-blue-800">Loading driver and trip records…</p>}
-      {error && <div role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><p>{error.message}</p>{error instanceof ApiError && <details className="mt-1 text-xs"><summary>Technical detail</summary><code>{error.technicalMessage}</code></details>}</div>}
-      <section>
-        <div className="mb-3 flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-gray-900">Assigned trips and passenger counts</h2><button type="button" onClick={() => { setError(null); setLoading(true); setReload((current) => current + 1); }} disabled={loading} className="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-60">Refresh</button></div>
-        <DataTable<TripRow> columns={columns} data={tripRows} loading={loading} emptyMessage={driverId ? 'No trips are assigned to this driver.' : 'Select a driver to view assigned trips.'} />
+
+      <section className="grid grid-cols-2 gap-3 xl:grid-cols-4" aria-label="Driver summary">
+        <SummaryCard icon={<CalendarDays size={18} />} label="Today's trips" value={todayTrips} />
+        <SummaryCard icon={<Clock3 size={18} />} label="Upcoming trips" value={upcomingTrips} />
+        <SummaryCard icon={<CheckCircle2 size={18} />} label="Completed trips" value={completedTrips} />
+        <article className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium text-gray-600">Average rating</span><span className="rounded-md bg-amber-50 p-2 text-amber-700"><Star size={18} /></span></div><p className="mt-3 text-2xl font-bold text-gray-900">{moneylessRating(averageRating)}</p><div className="mt-1 flex items-center justify-between"><RatingStars rating={averageRating} label={`Average rating ${moneylessRating(averageRating)}`} /><span className="text-xs text-gray-500">{feedback.ratingCount} rating(s)</span></div></article>
       </section>
-      {selectedDriver && <div className="grid gap-4 md:grid-cols-2">
-        <section className="rounded border border-gray-200 bg-white p-4"><h2 className="font-semibold text-gray-900">Assigned vehicle</h2><p className="mt-2 text-sm text-gray-700">{assignedVehicle ? `${assignedVehicle.registrationNumber} · ${assignedVehicle.make} ${assignedVehicle.model}` : 'No vehicle is currently assigned.'}</p><p className="mt-2 text-xs text-gray-500">Maintenance records are managed from the Maintenance page.</p></section>
-        <section className="rounded border border-gray-200 bg-white p-4"><h2 className="font-semibold text-gray-900">Driver feedback</h2><p className="mt-2 text-sm text-gray-700">{driverFeedback.length ? `${driverFeedback.length} feedback record(s), average ${ (driverFeedback.reduce((sum, item) => sum + Number(item.rating), 0) / driverFeedback.length).toFixed(2)}/5.` : 'No feedback records yet.'}</p></section>
-      </div>}
-      {selectedDriver && assignedTrips.map((trip) => {
-        const tripPassengers = bookings.filter((booking) => booking.tripId === trip.id && booking.status !== 'cancelled').map((booking) => passengers.find((passenger) => passenger.id === booking.passengerId));
-        return <section key={trip.id} className="rounded border border-gray-200 bg-white p-4"><h3 className="font-semibold text-gray-900">Passengers for trip #{trip.id}</h3><p className="mt-2 text-sm text-gray-700">{tripPassengers.length ? tripPassengers.map((passenger) => passenger ? `${passenger.firstName} ${passenger.lastName}` : 'Passenger record unavailable').join(', ') : 'No passengers booked.'}</p></section>;
-      })}
+
+      {bootstrapLoading && <div className="h-12 animate-pulse rounded-lg bg-gray-200" aria-label="Loading driver dashboard" />}
+      {toast && <div role={toast.kind === 'error' ? 'alert' : 'status'} className={`flex items-start justify-between gap-3 rounded-lg border p-3 text-sm ${toast.kind === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}><span>{toast.message}</span><button type="button" aria-label="Dismiss message" onClick={() => setToast(null)} className="rounded p-1 hover:bg-black/5"><span aria-hidden="true">×</span></button></div>}
+
+      <div className="overflow-x-auto border-b border-gray-200" role="tablist" aria-label="Driver dashboard sections"><div className="flex min-w-max gap-1">{tabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`driver-panel-${tab.id}`} onClick={() => setActiveTab(tab.id)} className={`border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${activeTab === tab.id ? 'border-blue-800 text-blue-900' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>{tab.label}</button>)}</div></div>
+
+      <div id={`driver-panel-${activeTab}`} role="tabpanel" className="min-h-64">
+        {activeTab === 'trips' && <section className="space-y-6">
+          <div><h2 className="text-lg font-semibold text-gray-900">My trips</h2><p className="text-sm text-gray-600">Start only when the server marks a trip ready, and complete active trips here.</p></div>
+          {loading ? <div className="grid gap-3 lg:grid-cols-2" aria-label="Loading trips">{[0, 1].map((item) => <div key={item} className="h-44 animate-pulse rounded-lg bg-gray-100" />)}</div>
+            : !driverId ? <EmptyState icon={<CalendarDays size={20} />} message="Select a driver to see assigned trips." />
+              : <>{tripSection('In progress', 'in_progress', <Clock3 size={18} />)}{tripSection('Upcoming', 'upcoming', <CalendarDays size={18} />)}{tripSection('Completed', 'completed', <CheckCircle2 size={18} />)}</>}
+        </section>}
+
+        {activeTab === 'vehicle' && <section className="space-y-4">
+          <div><h2 className="text-lg font-semibold text-gray-900">Assigned vehicle</h2><p className="text-sm text-gray-600">Vehicle linked to your active or upcoming work.</p></div>
+          {loading ? <div className="h-48 animate-pulse rounded-lg bg-gray-100" aria-label="Loading vehicle" /> : !driverId ? <EmptyState icon={<CarFront size={20} />} message="Select a driver to view the assigned vehicle." /> : !vehicle ? <EmptyState icon={<CarFront size={20} />} message="No vehicle is currently assigned." /> : <article className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-medium uppercase text-gray-500">{vehicle.vehicleType}</p><h3 className="mt-1 text-xl font-semibold text-gray-900">{vehicle.registrationNumber}</h3><p className="text-sm text-gray-600">{vehicle.make} {vehicle.model}</p></div><StatusBadge status={vehicle.status} type="vehicle" /></div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2"><div><p className="text-xs text-gray-500">Capacity</p><p className="mt-1 font-semibold text-gray-900">{vehicle.seatingCapacity} seats</p></div><div><p className="text-xs text-gray-500">Fuel type</p><p className="mt-1 font-semibold capitalize text-gray-900">{vehicle.fuelType}</p></div><div><p className="text-xs text-gray-500">Next maintenance</p><p className="mt-1 font-semibold text-gray-900">{formatDay(vehicle.nextMaintenanceDate)}</p></div></div>
+            {maintenanceDays !== null && maintenanceDays <= 14 && <div className={`mt-4 inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${maintenanceDays < 0 ? 'bg-red-50 text-red-800' : 'bg-amber-50 text-amber-900'}`}><StatusBadge status={maintenanceDays < 0 ? 'overdue' : 'maintenance'} type="maintenance" />{maintenanceDays < 0 ? `${Math.abs(maintenanceDays)} day(s) overdue` : maintenanceDays === 0 ? 'Maintenance due today' : `Maintenance due in ${maintenanceDays} day(s)`}</div>}
+          </article>}
+        </section>}
+
+        {activeTab === 'feedback' && <section className="space-y-4">
+          <div><h2 className="text-lg font-semibold text-gray-900">Driver feedback</h2><p className="text-sm text-gray-600">Ratings and recent passenger comments.</p></div>
+          {loading ? <div className="h-40 animate-pulse rounded-lg bg-gray-100" aria-label="Loading feedback" /> : !driverId ? <EmptyState icon={<MessageSquareText size={20} />} message="Select a driver to view feedback." /> : feedback.ratingCount === 0 ? <EmptyState icon={<MessageSquareText size={20} />} message="No feedback has been submitted yet." /> : <>
+            <article className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm"><div><p className="text-sm text-gray-600">Average rating</p><p className="mt-1 text-3xl font-bold text-gray-900">{moneylessRating(feedback.averageRating)}</p></div><div className="text-right"><RatingStars rating={feedback.averageRating} label={`Average rating ${moneylessRating(feedback.averageRating)}`} /><p className="mt-1 text-sm text-gray-600">{feedback.ratingCount} rating(s)</p></div></article>
+            <div className="grid gap-3 lg:grid-cols-2">{feedback.recentComments.map((item) => <article key={item.feedbackId} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><RatingStars rating={item.rating} label={`${item.rating} out of 5 stars`} /><time className="text-xs text-gray-500">{formatDate(item.feedbackDate)}</time></div><p className="mt-3 text-sm text-gray-700">{item.comment?.trim() || 'No comment provided.'}</p></article>)}</div>
+          </>}
+        </section>}
+
+        {activeTab === 'profile' && <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
+          <div className="mb-5"><h2 className="text-lg font-semibold text-gray-900">Driver profile</h2><p className="mt-1 text-sm text-gray-600">Phone and email can be updated. License, rating, and status are read-only.</p></div>
+          {loading ? <div className="grid gap-3 sm:grid-cols-2"><div className="h-16 animate-pulse rounded bg-gray-100" /><div className="h-16 animate-pulse rounded bg-gray-100" /><div className="h-16 animate-pulse rounded bg-gray-100" /></div> : !profile ? <EmptyState icon={<Users size={20} />} message="Select a driver to view profile details." /> : <form onSubmit={saveProfile} noValidate className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1 text-sm font-medium text-gray-700"><span>First name</span><input value={profile.firstName} readOnly className={`${inputClass} bg-gray-50 text-gray-500`} aria-label="First name" /></label>
+              <label className="space-y-1 text-sm font-medium text-gray-700"><span>Last name</span><input value={profile.lastName} readOnly className={`${inputClass} bg-gray-50 text-gray-500`} aria-label="Last name" /></label>
+              <label className="space-y-1 text-sm font-medium text-gray-700"><span>Phone</span><input value={profileDraft.phone} onChange={(event) => { setProfileDraft((current) => ({ ...current, phone: event.target.value })); setErrors((current) => ({ ...current, phone: '' })); }} className={inputClass} aria-label="Phone" aria-invalid={Boolean(errors.phone)} />{errors.phone && <span className="text-xs text-red-700">{errors.phone}</span>}</label>
+              <label className="space-y-1 text-sm font-medium text-gray-700"><span>Email</span><input type="email" value={profileDraft.email} onChange={(event) => { setProfileDraft((current) => ({ ...current, email: event.target.value })); setErrors((current) => ({ ...current, email: '' })); }} className={inputClass} aria-label="Email" aria-invalid={Boolean(errors.email)} />{errors.email && <span className="text-xs text-red-700">{errors.email}</span>}</label>
+              <label className="space-y-1 text-sm font-medium text-gray-700"><span>License number</span><input value={profile.licenseNumber} readOnly className={`${inputClass} bg-gray-50 text-gray-500`} aria-label="License number" /></label>
+              <div className="space-y-1 text-sm font-medium text-gray-700"><span className="block">License expiry</span><div className="flex flex-wrap items-center gap-2"><input value={formatDay(profile.licenseExpiry)} readOnly className={`${inputClass} flex-1 bg-gray-50 text-gray-500`} aria-label="License expiry" />{expiryDays !== null && expiryDays <= 30 && <StatusBadge status={expiryDays < 0 ? 'overdue' : 'pending'} type="driver" />}</div>{expiryDays !== null && expiryDays <= 30 && <span className={`text-xs ${expiryDays < 0 ? 'text-red-700' : 'text-amber-800'}`}>{expiryDays < 0 ? `License expired ${Math.abs(expiryDays)} day(s) ago.` : `License expires in ${expiryDays} day(s).`}</span>}</div>
+              <label className="space-y-1 text-sm font-medium text-gray-700"><span>Rating</span><input value={moneylessRating(feedback.averageRating)} readOnly className={`${inputClass} bg-gray-50 text-gray-500`} aria-label="Driver rating" /></label>
+              <div className="space-y-1 text-sm font-medium text-gray-700"><span className="block">Status</span><div className="pt-2"><StatusBadge status={profile.status} type="driver" /></div></div>
+            </div>
+            <button type="submit" disabled={saving} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">{saving ? 'Saving…' : 'Save profile'}</button>
+          </form>}
+        </section>}
+      </div>
+
+      <Modal isOpen={Boolean(confirmAction)} onClose={() => { if (!savingTripId) setConfirmAction(null); }} title={confirmAction?.kind === 'start' ? 'Start trip?' : 'Complete trip?'} size="sm">
+        {confirmAction && <FocusTrap><div className="space-y-4"><p className="text-sm text-gray-700">{confirmAction.kind === 'start' ? 'Confirm that you are beginning this scheduled trip.' : 'Confirm that this trip has finished. The arrival time and confirmed passenger bookings will be updated.'}</p><p className="font-semibold text-gray-900">{routeTitle(confirmAction.trip)}</p><div className="flex justify-end gap-2"><button type="button" disabled={savingTripId === confirmAction.trip.tripId} onClick={() => setConfirmAction(null)} className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700">Back</button><button type="button" disabled={savingTripId === confirmAction.trip.tripId} onClick={() => void confirmTripAction()} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTripId === confirmAction.trip.tripId ? 'Saving…' : `Confirm ${confirmAction.kind}`}</button></div></div></FocusTrap>}
+      </Modal>
+
+      <Modal isOpen={Boolean(manifestTrip)} onClose={() => setManifestTrip(null)} title={manifestTrip ? `Passengers · ${manifestTrip.routeCode}` : 'Passengers'} size="lg">
+        <FocusTrap>
+          {manifestLoading ? <div className="h-32 animate-pulse rounded bg-gray-100" aria-label="Loading passengers" /> : manifest.length === 0 ? <EmptyState icon={<Users size={20} />} message="No passengers are booked for this trip." /> : <>
+            <div className="hidden overflow-x-auto md:block"><DataTable<ManifestPassenger> columns={[
+              { key: 'passengerName', label: 'Passenger' }, { key: 'seatNumber', label: 'Seat' }, { key: 'phone', label: 'Phone' },
+              { key: 'bookingStatus', label: 'Booking', render: (row) => <StatusBadge status={row.bookingStatus} type="booking" /> },
+              { key: 'paymentStatus', label: 'Payment', render: (row) => <StatusBadge status={row.paymentStatus} type="payment" /> },
+            ]} data={manifest} emptyMessage="No passengers are booked for this trip." /></div>
+            <div className="grid gap-3 md:hidden">{manifest.map((person) => <article key={person.bookingId} className="rounded-lg border border-gray-200 bg-white p-3"><div className="flex items-start justify-between gap-2"><p className="font-semibold text-gray-900">{person.passengerName}</p><span className="text-sm text-gray-600">Seat {person.seatNumber}</span></div><p className="mt-1 text-sm text-gray-600">{person.phone ?? 'No phone listed'}</p><div className="mt-3 flex flex-wrap gap-2"><StatusBadge status={person.bookingStatus} type="booking" /><StatusBadge status={person.paymentStatus} type="payment" /></div></article>)}</div>
+          </>}
+        </FocusTrap>
+      </Modal>
     </div>
   );
 };
+
 export default DriverDashboard;

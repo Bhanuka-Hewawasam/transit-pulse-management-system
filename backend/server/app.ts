@@ -7,6 +7,8 @@ import {
   oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookings, oraclePassengerCancelBooking,
   oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerProfile, oraclePassengerSearchTrips,
   oraclePassengerSubmitFeedback, oraclePassengerUpdateProfile, oracleReport, oracleUpdate, oracleUpdateTripStatus,
+  oracleDriverCompleteTrip, oracleDriverExists, oracleDriverFeedback, oracleDriverManifest, oracleDriverProfile,
+  oracleDriverStartTrip, oracleDriverSummary, oracleDriverTrips, oracleDriverUpdateProfile, oracleDriverVehicle,
 } from './oracleAdapter.js';
 
 const app = express();
@@ -376,6 +378,211 @@ app.put('/api/passenger/profile', requireActingPassenger, passengerEndpoint(asyn
   if (!passenger) return void response.status(404).json({ error: 'Passenger was not found.' });
   Object.assign(passenger, { firstName, lastName, phone, address });
   return void response.json(passengerProfile(passenger));
+}));
+
+const driverErrorResponse = (error: unknown, response: Response) => {
+  const failure = error as Error & { statusCode?: number; errorNum?: number; code?: string };
+  const oracleCode = failure.code?.match(/ORA-(\d{5})/)?.[1] ?? String(failure.errorNum ?? '');
+  if (/^20\d{3}$/.test(oracleCode)) {
+    return response.status(400).json({ error: failure.message.split(/\r?\n/, 1)[0].replace(/^ORA-20\d{3}:\s*/, '') });
+  }
+  if (oracleCode === '00001') return response.status(409).json({ error: 'Driver email already belongs to another driver.' });
+  if (failure.statusCode && failure.statusCode >= 400 && failure.statusCode < 500) {
+    return response.status(failure.statusCode).json({ error: failure.message });
+  }
+  console.error(`Driver API request failed${oracleCode ? ` with ORA-${oracleCode}` : failure.code ? ` with ${failure.code}` : ''}.`);
+  return response.status(500).json({ error: 'Driver request could not be completed. Please try again.' });
+};
+
+const requireActingDriver = async (request: Request, response: Response, next: NextFunction) => {
+  const header = request.get('X-Driver-Id');
+  if (!header) return response.status(400).json({ error: 'X-Driver-Id header is required.' });
+  const driverId = Number(header);
+  if (!Number.isInteger(driverId) || driverId <= 0) return response.status(400).json({ error: 'X-Driver-Id must be a positive integer.' });
+  try {
+    const exists = process.env.DATABASE_MODE === 'oracle'
+      ? await oracleDriverExists(driverId)
+      : process.env.DATABASE_MODE === 'demo'
+        ? database.drivers.some((driver) => driver.id === driverId)
+        : null;
+    if (exists === null) return response.status(503).json({ error: 'Set DATABASE_MODE to oracle or demo before using driver endpoints.' });
+    if (!exists) return response.status(404).json({ error: 'Driver was not found.' });
+    response.locals.driverId = driverId;
+    return next();
+  } catch (error) { return driverErrorResponse(error, response); }
+};
+
+type DriverHandler = (request: Request, response: Response, driverId: number) => Promise<void> | void;
+const driverEndpoint = (handler: DriverHandler) => async (request: Request, response: Response) => {
+  try { await handler(request, response, Number(response.locals.driverId)); }
+  catch (error) { return driverErrorResponse(error, response); }
+};
+
+const driverProfile = (driver: Driver) => ({
+  driverId: driver.id, firstName: driver.firstName, lastName: driver.lastName, phone: driver.phone,
+  email: driver.email, licenseNumber: driver.licenseNumber, licenseExpiry: driver.licenseExpiry,
+  status: driver.status, rating: driver.rating, totalTrips: driver.totalTrips,
+});
+
+const demoDriverSummary = (driverId: number) => {
+  const driver = database.drivers.find((item) => item.id === driverId)!;
+  const driverTrips = database.trips.filter((trip) => trip.driverId === driverId);
+  const ratings = database.feedback.filter((item) => item.driverId === driverId);
+  const averageRating = ratings.length ? ratings.reduce((total, item) => total + Number(item.rating), 0) / ratings.length : null;
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const tomorrowStart = todayStart + 24 * 60 * 60 * 1000;
+  return {
+    driverId, firstName: driver.firstName, lastName: driver.lastName, status: driver.status,
+    licenseExpiry: driver.licenseExpiry, todayTrips: driverTrips.filter((trip) => {
+      const departure = new Date(trip.departureTime).getTime();
+      return departure >= todayStart && departure < tomorrowStart;
+    }).length,
+    upcomingTrips: driverTrips.filter((trip) => trip.status === 'scheduled' && new Date(trip.departureTime).getTime() > Date.now()).length,
+    completedTrips: driverTrips.filter((trip) => trip.status === 'completed').length,
+    averageRating, ratingCount: ratings.length,
+  };
+};
+
+app.get('/api/driver/summary', requireActingDriver, driverEndpoint(async (_request, response, driverId) => {
+  const summary = process.env.DATABASE_MODE === 'oracle' ? await oracleDriverSummary(driverId) : demoDriverSummary(driverId);
+  if (!summary) return void response.status(404).json({ error: 'Driver was not found.' });
+  return void response.json(summary);
+}));
+
+app.get('/api/driver/trips', requireActingDriver, driverEndpoint(async (request, response, driverId) => {
+  const filter = String(request.query.filter ?? 'upcoming');
+  if (!['upcoming', 'in_progress', 'completed'].includes(filter)) return void response.status(400).json({ error: 'filter must be upcoming, in_progress, or completed.' });
+  if (process.env.DATABASE_MODE === 'oracle') return void response.json(await oracleDriverTrips(driverId, filter as 'upcoming' | 'in_progress' | 'completed'));
+  const activeTripExists = database.trips.some((trip) => trip.driverId === driverId && trip.status === 'in_progress');
+  return void response.json(database.trips.filter((trip) => {
+    if (trip.driverId !== driverId) return false;
+    if (filter === 'upcoming') return trip.status === 'scheduled' && new Date(trip.departureTime).getTime() > Date.now();
+    return trip.status === filter;
+  }).map((trip) => {
+    const route = database.routes.find((item) => item.id === trip.routeId);
+    const vehicle = database.vehicles.find((item) => item.id === trip.vehicleId);
+    return { tripId: trip.id, routeId: trip.routeId, routeCode: route?.routeCode, origin: route?.origin,
+      destination: route?.destination, departureTime: trip.departureTime, arrivalTime: trip.arrivalTime,
+      status: trip.status, availableSeats: trip.availableSeats, totalSeats: trip.totalSeats,
+      vehicleId: trip.vehicleId, vehicleRegistration: vehicle?.registrationNumber,
+      seatsBooked: trip.totalSeats - trip.availableSeats,
+      canStart: trip.status === 'scheduled' && new Date(trip.departureTime).getTime() <= Date.now() + 30 * 60 * 1000 && !activeTripExists,
+      canComplete: trip.status === 'in_progress' };
+  }));
+}));
+
+app.get('/api/driver/trips/:tripId/manifest', requireActingDriver, driverEndpoint(async (request, response, driverId) => {
+  const tripId = Number(request.params.tripId);
+  if (!Number.isInteger(tripId) || tripId <= 0) return void response.status(400).json({ error: 'tripId must be a positive integer.' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    const manifest = await oracleDriverManifest(driverId, tripId);
+    if (!manifest) return void response.status(404).json({ error: 'Trip was not found for this driver.' });
+    return void response.json(manifest);
+  }
+  const trip = database.trips.find((item) => item.id === tripId && item.driverId === driverId);
+  if (!trip) return void response.status(404).json({ error: 'Trip was not found for this driver.' });
+  const manifest = database.bookings.filter((booking) => booking.tripId === tripId).map((booking) => {
+    const passenger = database.passengers.find((item) => item.id === booking.passengerId);
+    const payment = database.payments.filter((item) => item.bookingId === booking.id).at(-1);
+    return { bookingId: booking.id, passengerId: booking.passengerId,
+      passengerName: passenger ? `${passenger.firstName} ${passenger.lastName}` : 'Passenger unavailable',
+      phone: passenger?.phone ?? null, seatNumber: booking.seatNumber, bookingStatus: booking.status,
+      paymentStatus: payment?.status ?? 'unpaid' };
+  });
+  return void response.json(manifest);
+}));
+
+app.post('/api/driver/trips/:tripId/start', requireActingDriver, driverEndpoint(async (request, response, driverId) => {
+  const tripId = Number(request.params.tripId);
+  if (!Number.isInteger(tripId) || tripId <= 0) return void response.status(400).json({ error: 'tripId must be a positive integer.' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oracleDriverStartTrip(driverId, tripId);
+  } else {
+    const trip = database.trips.find((item) => item.id === tripId);
+    if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+    if (trip.driverId !== driverId) return void response.status(400).json({ error: 'Trip is not assigned to this driver.' });
+    if (trip.status !== 'scheduled') return void response.status(400).json({ error: 'Only scheduled trips can be started.' });
+    if (new Date(trip.departureTime).getTime() > Date.now() + 30 * 60 * 1000) return void response.status(400).json({ error: 'Trip can only be started within 30 minutes of departure.' });
+    if (database.trips.some((item) => item.driverId === driverId && item.id !== tripId && item.status === 'in_progress')) return void response.status(400).json({ error: 'Driver already has another in-progress trip.' });
+    trip.status = 'in_progress';
+    const driver = database.drivers.find((item) => item.id === driverId);
+    if (driver) driver.status = 'on_trip';
+  }
+  return void response.json({ tripId, status: 'in_progress' });
+}));
+
+app.post('/api/driver/trips/:tripId/complete', requireActingDriver, driverEndpoint(async (request, response, driverId) => {
+  const tripId = Number(request.params.tripId);
+  if (!Number.isInteger(tripId) || tripId <= 0) return void response.status(400).json({ error: 'tripId must be a positive integer.' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oracleDriverCompleteTrip(driverId, tripId);
+  } else {
+    const trip = database.trips.find((item) => item.id === tripId);
+    if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+    if (trip.driverId !== driverId) return void response.status(400).json({ error: 'Trip is not assigned to this driver.' });
+    if (trip.status !== 'in_progress') return void response.status(400).json({ error: 'Only in-progress trips can be completed.' });
+    trip.status = 'completed';
+    trip.arrivalTime = new Date().toISOString();
+    database.bookings.filter((booking) => booking.tripId === tripId && booking.status === 'confirmed').forEach((booking) => { booking.status = 'completed'; });
+    const driver = database.drivers.find((item) => item.id === driverId);
+    if (driver) { driver.totalTrips += 1; driver.status = 'available'; }
+  }
+  return void response.json({ tripId, status: 'completed' });
+}));
+
+app.get('/api/driver/vehicle', requireActingDriver, driverEndpoint(async (_request, response, driverId) => {
+  if (process.env.DATABASE_MODE === 'oracle') return void response.json(await oracleDriverVehicle(driverId));
+  const preferredTrip = database.trips.filter((trip) => trip.driverId === driverId).sort((left, right) => {
+    const priority = (status: string) => status === 'in_progress' ? 0 : status === 'scheduled' ? 1 : 2;
+    return priority(left.status) - priority(right.status) || new Date(left.departureTime).getTime() - new Date(right.departureTime).getTime();
+  })[0];
+  const vehicle = preferredTrip && database.vehicles.find((item) => item.id === preferredTrip.vehicleId);
+  return void response.json(vehicle ? {
+    vehicleId: vehicle.id, registrationNumber: vehicle.registrationNumber, make: vehicle.make, model: vehicle.model,
+    vehicleType: vehicle.type, seatingCapacity: vehicle.capacity, fuelType: vehicle.fuelType,
+    status: vehicle.status, nextMaintenanceDate: vehicle.nextMaintenanceDate,
+  } : null);
+}));
+
+app.get('/api/driver/feedback-summary', requireActingDriver, driverEndpoint(async (_request, response, driverId) => {
+  if (process.env.DATABASE_MODE === 'oracle') return void response.json(await oracleDriverFeedback(driverId));
+  const records = database.feedback.filter((item) => item.driverId === driverId).sort((left, right) => String(right.feedbackDate).localeCompare(String(left.feedbackDate)));
+  return void response.json({
+    averageRating: records.length ? records.reduce((total, item) => total + Number(item.rating), 0) / records.length : null,
+    ratingCount: records.length,
+    recentComments: records.slice(0, 10).map((item) => ({ feedbackId: item.id, tripId: item.tripId, rating: item.rating, comment: item.comment, feedbackDate: item.feedbackDate })),
+  });
+}));
+
+app.get('/api/driver/profile', requireActingDriver, driverEndpoint(async (_request, response, driverId) => {
+  if (process.env.DATABASE_MODE === 'oracle') {
+    const profile = await oracleDriverProfile(driverId);
+    if (!profile) return void response.status(404).json({ error: 'Driver was not found.' });
+    return void response.json(profile);
+  }
+  const driver = database.drivers.find((item) => item.id === driverId);
+  return void response.json(driver ? driverProfile(driver) : null);
+}));
+
+app.put('/api/driver/profile', requireActingDriver, driverEndpoint(async (request, response, driverId) => {
+  const phone = request.body.phone === null ? null : String(request.body.phone ?? '').trim() || null;
+  const email = request.body.email === null ? null : String(request.body.email ?? '').trim() || null;
+  if (phone && phone.length > 20) return void response.status(400).json({ error: 'Phone must be 20 characters or fewer.' });
+  if (email && email.length > 100) return void response.status(400).json({ error: 'Email must be 100 characters or fewer.' });
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return void response.status(400).json({ error: 'Email must be a valid email address.' });
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oracleDriverUpdateProfile(driverId, phone, email);
+    return void response.json(await oracleDriverProfile(driverId));
+  }
+  const driver = database.drivers.find((item) => item.id === driverId);
+  if (!driver) return void response.status(404).json({ error: 'Driver was not found.' });
+  if (database.drivers.some((item) => item.id !== driverId && email && item.email?.toLowerCase() === email.toLowerCase())) {
+    return void response.status(409).json({ error: 'Email already belongs to another driver.' });
+  }
+  driver.phone = phone;
+  driver.email = email;
+  return void response.json(driverProfile(driver));
 }));
 
 app.use('/api/reports', (_request, response, next) => {

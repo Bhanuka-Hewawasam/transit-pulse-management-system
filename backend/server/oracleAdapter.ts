@@ -347,6 +347,233 @@ export async function oraclePassengerUpdateProfile(passengerId: number, profile:
   ).then(() => undefined));
 }
 
+export type DriverTripFilter = 'upcoming' | 'in_progress' | 'completed';
+export type DriverProfile = {
+  driverId: number;
+  firstName: string;
+  lastName: string;
+  phone: string | null;
+  email: string | null;
+  licenseNumber: string;
+  licenseExpiry: Date | string;
+  status: string;
+  rating: number;
+  totalTrips: number;
+};
+
+async function withDriverTransaction<T>(operation: (connection: oracledb.Connection) => Promise<T>): Promise<T> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await operation(connection);
+    await connection.commit();
+    return result;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    await connection.close();
+  }
+}
+
+export async function oracleDriverExists(driverId: number): Promise<boolean> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<{ DRIVER_ID: number }>(
+      'SELECT driver_id FROM drivers WHERE driver_id = :driverId',
+      { driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return Boolean(result.rows?.length);
+  } finally { await connection.close(); }
+}
+
+export async function oracleDriverSummary(driverId: number): Promise<Record<string, unknown> | null> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT d.driver_id, d.first_name, d.last_name, d.status, d.license_expiry_date,
+              d.total_trips,
+              (SELECT COUNT(*) FROM trips t WHERE t.driver_id = d.driver_id
+                AND t.departure_time >= TRUNC(SYSDATE) AND t.departure_time < TRUNC(SYSDATE) + 1) AS today_trips,
+              (SELECT COUNT(*) FROM trips t WHERE t.driver_id = d.driver_id
+                AND t.status = 'scheduled' AND t.departure_time > SYSTIMESTAMP) AS upcoming_trips,
+              (SELECT COUNT(*) FROM trips t WHERE t.driver_id = d.driver_id AND t.status = 'completed') AS completed_trips,
+              (SELECT AVG(f.rating) FROM feedback f WHERE f.driver_id = d.driver_id) AS average_rating,
+              (SELECT COUNT(*) FROM feedback f WHERE f.driver_id = d.driver_id) AS rating_count
+         FROM drivers d WHERE d.driver_id = :driverId`,
+      { driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const row = result.rows?.[0];
+    return row ? {
+      driverId: Number(row.DRIVER_ID), firstName: row.FIRST_NAME, lastName: row.LAST_NAME,
+      status: row.STATUS, licenseExpiry: row.LICENSE_EXPIRY_DATE, totalTrips: Number(row.TOTAL_TRIPS ?? 0),
+      todayTrips: Number(row.TODAY_TRIPS ?? 0), upcomingTrips: Number(row.UPCOMING_TRIPS ?? 0),
+      completedTrips: Number(row.COMPLETED_TRIPS ?? 0), averageRating: row.AVERAGE_RATING === null ? null : Number(row.AVERAGE_RATING),
+      ratingCount: Number(row.RATING_COUNT ?? 0),
+    } : null;
+  } finally { await connection.close(); }
+}
+
+export async function oracleDriverTrips(driverId: number, filter: DriverTripFilter): Promise<Record<string, unknown>[]> {
+  const filterCondition = filter === 'upcoming'
+    ? "t.status = 'scheduled' AND t.departure_time > SYSTIMESTAMP"
+    : filter === 'in_progress' ? "t.status = 'in_progress'" : "t.status = 'completed'";
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT t.trip_id, t.route_id, r.route_code, r.origin, r.destination,
+              t.departure_time, t.arrival_time, t.status, t.available_seats, t.total_seats,
+              v.vehicle_id, v.registration_number AS vehicle_registration,
+              (t.total_seats - t.available_seats) AS seats_booked,
+              CASE WHEN t.status = 'scheduled'
+                         AND t.departure_time <= SYSTIMESTAMP + INTERVAL '30' MINUTE
+                         AND NOT EXISTS (SELECT 1 FROM trips active_trip
+                                          WHERE active_trip.driver_id = t.driver_id
+                                            AND active_trip.trip_id <> t.trip_id
+                                            AND active_trip.status = 'in_progress')
+                   THEN 1 ELSE 0 END AS can_start,
+              CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END AS can_complete
+         FROM trips t JOIN routes r ON r.route_id = t.route_id
+         JOIN vehicles v ON v.vehicle_id = t.vehicle_id
+        WHERE t.driver_id = :driverId AND ${filterCondition}
+        ORDER BY t.departure_time`,
+      { driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return (result.rows ?? []).map((row) => ({
+      tripId: Number(row.TRIP_ID), routeId: Number(row.ROUTE_ID), routeCode: row.ROUTE_CODE,
+      origin: row.ORIGIN, destination: row.DESTINATION, departureTime: row.DEPARTURE_TIME,
+      arrivalTime: row.ARRIVAL_TIME, status: row.STATUS, availableSeats: Number(row.AVAILABLE_SEATS),
+      totalSeats: Number(row.TOTAL_SEATS), vehicleId: Number(row.VEHICLE_ID), vehicleRegistration: row.VEHICLE_REGISTRATION,
+      seatsBooked: Number(row.SEATS_BOOKED), canStart: Number(row.CAN_START) === 1, canComplete: Number(row.CAN_COMPLETE) === 1,
+    }));
+  } finally { await connection.close(); }
+}
+
+export async function oracleDriverManifest(driverId: number, tripId: number): Promise<Record<string, unknown>[] | null> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const ownedTrip = await connection.execute<{ TRIP_ID: number }>(
+      'SELECT trip_id FROM trips WHERE trip_id = :tripId AND driver_id = :driverId',
+      { tripId, driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    if (!ownedTrip.rows?.length) return null;
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT b.booking_id, b.passenger_id, p.first_name, p.last_name, p.phone, b.seat_number,
+              b.status AS booking_status,
+              NVL((SELECT status FROM (
+                SELECT py.status FROM payments py WHERE py.booking_id = b.booking_id
+                ORDER BY py.payment_date DESC, py.payment_id DESC
+              ) WHERE ROWNUM = 1), 'unpaid') AS payment_status
+         FROM bookings b JOIN passengers p ON p.passenger_id = b.passenger_id
+        WHERE b.trip_id = :tripId
+        ORDER BY b.seat_number`,
+      { tripId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return (result.rows ?? []).map((row) => ({
+      bookingId: Number(row.BOOKING_ID), passengerId: Number(row.PASSENGER_ID),
+      passengerName: `${String(row.FIRST_NAME)} ${String(row.LAST_NAME)}`, phone: row.PHONE,
+      seatNumber: row.SEAT_NUMBER, bookingStatus: row.BOOKING_STATUS, paymentStatus: row.PAYMENT_STATUS,
+    }));
+  } finally { await connection.close(); }
+}
+
+export async function oracleDriverVehicle(driverId: number): Promise<Record<string, unknown> | null> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT vehicle_id, registration_number, make, model, vehicle_type, seating_capacity,
+              fuel_type, status, next_maintenance_date
+         FROM (
+           SELECT v.vehicle_id, v.registration_number, v.make, v.model, v.vehicle_type,
+                  v.seating_capacity, v.fuel_type, v.status, v.next_maintenance_date,
+                  ROW_NUMBER() OVER (ORDER BY CASE t.status WHEN 'in_progress' THEN 1 WHEN 'scheduled' THEN 2 ELSE 3 END,
+                                     CASE WHEN t.status = 'scheduled' THEN t.departure_time END,
+                                     t.departure_time DESC) AS row_num
+             FROM trips t JOIN vehicles v ON v.vehicle_id = t.vehicle_id
+            WHERE t.driver_id = :driverId
+         ) WHERE row_num = 1`,
+      { driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const row = result.rows?.[0];
+    return row ? {
+      vehicleId: Number(row.VEHICLE_ID), registrationNumber: row.REGISTRATION_NUMBER,
+      make: row.MAKE, model: row.MODEL, vehicleType: row.VEHICLE_TYPE,
+      seatingCapacity: Number(row.SEATING_CAPACITY), fuelType: row.FUEL_TYPE,
+      status: row.STATUS, nextMaintenanceDate: row.NEXT_MAINTENANCE_DATE,
+    } : null;
+  } finally { await connection.close(); }
+}
+
+export async function oracleDriverFeedback(driverId: number): Promise<Record<string, unknown>> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const summary = await connection.execute<Record<string, unknown>>(
+      'SELECT AVG(rating) AS average_rating, COUNT(*) AS rating_count FROM feedback WHERE driver_id = :driverId',
+      { driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const recent = await connection.execute<Record<string, unknown>>(
+      `SELECT feedback_id, trip_id, rating, feedback_comment, feedback_date
+         FROM (SELECT feedback_id, trip_id, rating, feedback_comment, feedback_date
+                 FROM feedback WHERE driver_id = :driverId ORDER BY feedback_date DESC, feedback_id DESC)
+        WHERE ROWNUM <= 10`,
+      { driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const row = summary.rows?.[0];
+    return {
+      averageRating: row?.AVERAGE_RATING === null || row?.AVERAGE_RATING === undefined ? null : Number(row.AVERAGE_RATING),
+      ratingCount: Number(row?.RATING_COUNT ?? 0),
+      recentComments: (recent.rows ?? []).map((item) => ({
+        feedbackId: Number(item.FEEDBACK_ID), tripId: Number(item.TRIP_ID), rating: Number(item.RATING),
+        comment: item.FEEDBACK_COMMENT, feedbackDate: item.FEEDBACK_DATE,
+      })),
+    };
+  } finally { await connection.close(); }
+}
+
+export async function oracleDriverProfile(driverId: number): Promise<DriverProfile | null> {
+  const connection = await (await getPool()).getConnection();
+  try {
+    const result = await connection.execute<Record<string, unknown>>(
+      `SELECT driver_id, first_name, last_name, phone, email, license_number, license_expiry_date, status, rating, total_trips
+         FROM drivers WHERE driver_id = :driverId`,
+      { driverId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const row = result.rows?.[0];
+    return row ? {
+      driverId: Number(row.DRIVER_ID), firstName: String(row.FIRST_NAME), lastName: String(row.LAST_NAME),
+      phone: row.PHONE === null ? null : String(row.PHONE), email: row.EMAIL === null ? null : String(row.EMAIL),
+      licenseNumber: String(row.LICENSE_NUMBER), licenseExpiry: row.LICENSE_EXPIRY_DATE as Date,
+      status: String(row.STATUS), rating: Number(row.RATING ?? 0), totalTrips: Number(row.TOTAL_TRIPS ?? 0),
+    } : null;
+  } finally { await connection.close(); }
+}
+
+export async function oracleDriverStartTrip(driverId: number, tripId: number): Promise<void> {
+  await withDriverTransaction((connection) => connection.execute(
+    'BEGIN driver_start_trip(:driverId, :tripId); END;', { driverId, tripId },
+  ).then(() => undefined));
+}
+
+export async function oracleDriverCompleteTrip(driverId: number, tripId: number): Promise<void> {
+  await withDriverTransaction((connection) => connection.execute(
+    'BEGIN driver_complete_trip(:driverId, :tripId); END;', { driverId, tripId },
+  ).then(() => undefined));
+}
+
+export async function oracleDriverUpdateProfile(driverId: number, phone: string | null, email: string | null): Promise<void> {
+  await withDriverTransaction((connection) => connection.execute(
+    'BEGIN driver_update_profile(:driverId, :phone, :email); END;', { driverId, phone, email },
+  ).then(() => undefined));
+}
+
 export async function oracleCreate(resource: Resource, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const connection = await (await getPool()).getConnection();
   try {

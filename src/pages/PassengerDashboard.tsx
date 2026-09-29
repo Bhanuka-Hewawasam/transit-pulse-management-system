@@ -328,7 +328,9 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
       .then((content) => {
         if (!active) return;
         setContentSource(content.demo ? 'demo' : 'mongodb');
-        setAnnouncements(content.announcements.map((item) => ({ title: String(item.title ?? 'Announcement'), detail: String(item.body ?? item.detail ?? '') })));
+        setAnnouncements(content.announcements
+          .filter((item) => item.audience === undefined || item.audience === 'all' || item.audience === 'passengers')
+          .map((item) => ({ title: String(item.title ?? 'Announcement'), detail: String(item.message ?? item.body ?? item.detail ?? '') })));
         setReviewCount(content.reviews.length);
       })
       .catch(() => { if (active) setContentSource('unavailable'); });

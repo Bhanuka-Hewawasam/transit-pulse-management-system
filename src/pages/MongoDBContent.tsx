@@ -32,9 +32,9 @@ const loadMongoContent = async (includeInactive: boolean): Promise<LoadedContent
   const content = await apiGet<MongoContent>(`/mongodb/content${includeInactive ? '?includeInactive=true' : ''}`);
   const reviews = content.reviews.map((item, index) => ({
     id: `review-${value(item, '_id', 'id') || index}`,
-    title: `${value(item, 'rating')}/5 · Passenger #${value(item, 'passengerId') || '—'}`,
-    detail: value(item, 'comment', 'feedbackComment'),
-    meta: `${value(item, 'routeCode') || 'Route'} · ${value(item, 'createdAt', 'feedbackDate') || 'Date unavailable'}`,
+    title: `${value(item, 'type') === 'complaint' ? 'Complaint' : `${value(item, 'rating') || '—'}/5`} · Passenger #${value(item, 'passengerId') || '—'}`,
+    detail: value(item, 'complaint', 'comment', 'feedbackComment'),
+    meta: `${value(item, 'routeId', 'routeCode') || 'Route'} · ${value(item, 'createdAt', 'feedbackDate') || 'Date unavailable'}`,
     type: 'reviews',
   }));
   const announcements = content.announcements.map((item, index) => ({
@@ -55,7 +55,7 @@ const loadMongoContent = async (includeInactive: boolean): Promise<LoadedContent
     id: `media-${value(item, '_id', 'id') || index}`,
     title: `Trip #${value(item, 'tripId') || '—'} · ${value(item, 'mediaType') || 'Media'}`,
     detail: value(item, 'caption') || value(item, 'url'),
-    meta: value(item, 'routeCode') || 'Trip media',
+    meta: [value(item, 'routeId', 'routeCode'), value(item, 'uploadedBy')].filter(Boolean).join(' · ') || 'Trip media',
     type: 'media',
   }));
   return { items: [...reviews, ...announcements, ...documents, ...media], source: content.demo ? 'demo' : 'mongodb' };

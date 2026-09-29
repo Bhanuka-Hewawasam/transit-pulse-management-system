@@ -67,7 +67,10 @@ app.get('/api/mongodb/reviews/route/:routeId', async (request, response) => {
   const health = await mongodbHealth();
   if (!health.connected && process.env.DATABASE_MODE !== 'demo') return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
   const content = health.connected ? (await mongodbContent()).reviews : database.feedback;
-  response.json(content.filter((review) => String((review as { routeCode?: unknown }).routeCode) === request.params.routeId));
+  response.json(content.filter((review) => {
+    const record = review as { routeId?: unknown; routeCode?: unknown };
+    return String(record.routeId ?? record.routeCode) === request.params.routeId;
+  }));
 });
 app.get('/api/mongodb/announcements', async (_request, response) => {
   if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).announcements);

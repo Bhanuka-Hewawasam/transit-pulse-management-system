@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { database, nextId } from './database.js';
+import { calculateSegmentFare, calculateTotalFare } from '../../src/utils/routeFare.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, PaymentMethod, Route, Trip, Vehicle } from '../../src/types/index.js';
 import { mongodbContent, mongodbHealth, mongodbPassengerReviews } from './mongodbAdapter.js';
 import {
@@ -235,11 +236,14 @@ app.post('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(as
   if (request.body.seatCount !== undefined) {
     const seatCount = Number(request.body.seatCount);
     const amount = Number(request.body.amount);
-    if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(seatCount) || seatCount < 1 || !Number.isFinite(amount)) {
-      return void response.status(400).json({ error: 'tripId, a positive seatCount, and total amount are required.' });
+    const pickupPoint = String(request.body.pickupPoint ?? '').trim();
+    const dropoffPoint = String(request.body.dropoffPoint ?? '').trim();
+    if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(seatCount) || seatCount < 1
+      || !Number.isFinite(amount) || !pickupPoint || !dropoffPoint) {
+      return void response.status(400).json({ error: 'tripId, a positive seatCount, pickupPoint, dropoffPoint, and total amount are required.' });
     }
     if (process.env.DATABASE_MODE === 'oracle') {
-      const result = await oraclePassengerBookSeats(passengerId, tripId, seatCount, amount);
+      const result = await oraclePassengerBookSeats(passengerId, tripId, seatCount, amount, pickupPoint, dropoffPoint);
       return void response.status(201).json({ ...result, tripId, status: 'pending' });
     }
     const trip = database.trips.find((item) => item.id === tripId);
@@ -252,8 +256,11 @@ app.post('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(as
     }
     const route = database.routes.find((item) => item.id === trip.routeId);
     if (!route) return void response.status(400).json({ error: 'Trip route was not found.' });
-    const totalAmount = Math.round(route.fareAmount * seatCount * 100) / 100;
-    if (Math.round(amount * 100) !== Math.round(totalAmount * 100)) return void response.status(400).json({ error: 'Booking amount must equal the fare multiplied by the seat count.' });
+    const segmentFare = calculateSegmentFare(route, pickupPoint, dropoffPoint);
+    if (segmentFare === null) return void response.status(400).json({ error: 'Pickup point must come before the drop-off point on this route.' });
+    const totalAmount = calculateTotalFare(segmentFare, seatCount);
+    if (totalAmount === null) return void response.status(400).json({ error: 'The fare and seat count could not be calculated.' });
+    if (Math.round(amount * 100) !== Math.round(totalAmount * 100)) return void response.status(400).json({ error: 'Booking amount must equal the selected route segment fare multiplied by the seat count.' });
     const occupiedSeats = new Set(database.bookings
       .filter((booking) => booking.tripId === tripId && ['pending', 'confirmed'].includes(booking.status))
       .map((booking) => Number(booking.seatNumber.match(/[0-9]+/)?.[0]))
@@ -267,7 +274,7 @@ app.post('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(as
     for (const seat of seatNumbers) {
       createdBookings.push({
         id: nextId([...database.bookings, ...createdBookings]), tripId, passengerId,
-        seatNumber: String(seat), bookingDate, status: 'pending', amount: route.fareAmount,
+        seatNumber: String(seat), bookingDate, status: 'pending', amount: segmentFare,
       });
     }
     database.bookings.push(...createdBookings);
@@ -277,6 +284,7 @@ app.post('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(as
       bookingIds: createdBookings.map((booking) => booking.id),
       seatNumbers: createdBookings.map((booking) => booking.seatNumber),
       seatCount,
+      segmentFare,
       tripId,
       status: 'pending',
       amount: totalAmount,

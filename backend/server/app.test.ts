@@ -311,9 +311,9 @@ describe('SmartMove backend API', () => {
       bookingId: 81, bookingIds: [81, 82], seatNumbers: ['1', '2'], seatCount: 2, amount: 1000,
     });
     const booking = await request(app).post('/api/passenger/bookings').set('X-Passenger-Id', '7')
-      .send({ tripId: 12, seatCount: 2, amount: 1000 });
+      .send({ tripId: 12, seatCount: 2, amount: 1000, pickupPoint: 'Colombo', dropoffPoint: 'Kandy' });
     expect(booking.status).toBe(201);
-    expect(oracleMocks.passengerBookSeats).toHaveBeenCalledWith(7, 12, 2, 1000);
+    expect(oracleMocks.passengerBookSeats).toHaveBeenCalledWith(7, 12, 2, 1000, 'Colombo', 'Kandy');
     expect(booking.body).toMatchObject({ bookingIds: [81, 82], amount: 1000, seatCount: 2 });
 
     oracleMocks.passengerPayBookings.mockResolvedValue(undefined);
@@ -340,32 +340,41 @@ describe('SmartMove backend API', () => {
       database.bookings.filter((booking) => booking.tripId === trip.id && ['pending', 'confirmed'].includes(booking.status))
         .forEach((booking) => { booking.status = 'cancelled'; });
       const passengerHeader = { 'X-Passenger-Id': String(passenger.id) };
-      const amount = route.fareAmount * 2;
+      const pickupPoint = route.stops[0];
+      const dropoffPoint = route.destination;
+      const segmentFare = Math.round(route.fareAmount * route.stops.length / (route.stops.length + 1) * 100) / 100;
+      const amount = segmentFare * 2;
 
       trip.availableSeats = 1;
+
       const overCapacity = await request(app).post('/api/passenger/bookings').set(passengerHeader)
-        .send({ tripId: trip.id, seatCount: 2, amount });
+        .send({ tripId: trip.id, seatCount: 2, amount, pickupPoint, dropoffPoint });
       expect(overCapacity.status).toBe(400);
       expect(overCapacity.body.error).toMatch(/Only 1 seats are available/);
 
       trip.availableSeats = trip.totalSeats;
       const wrongBookingAmount = await request(app).post('/api/passenger/bookings').set(passengerHeader)
-        .send({ tripId: trip.id, seatCount: 2, amount: route.fareAmount });
+        .send({ tripId: trip.id, seatCount: 2, amount: route.fareAmount, pickupPoint, dropoffPoint });
       expect(wrongBookingAmount.status).toBe(400);
-      expect(wrongBookingAmount.body.error).toMatch(/fare multiplied by the seat count/);
+      expect(wrongBookingAmount.body.error).toMatch(/segment fare multiplied by the seat count/);
+
+      const reverseStops = await request(app).post('/api/passenger/bookings').set(passengerHeader)
+        .send({ tripId: trip.id, seatCount: 2, amount, pickupPoint: dropoffPoint, dropoffPoint: route.origin });
+      expect(reverseStops.status).toBe(400);
+      expect(reverseStops.body.error).toMatch(/must come before/);
 
       const booking = await request(app).post('/api/passenger/bookings').set(passengerHeader)
-        .send({ tripId: trip.id, seatCount: 2, amount });
+        .send({ tripId: trip.id, seatCount: 2, amount, pickupPoint, dropoffPoint });
       expect(booking.status).toBe(201);
-      expect(booking.body).toMatchObject({ seatCount: 2, amount, seatNumbers: ['1', '2'] });
+      expect(booking.body).toMatchObject({ seatCount: 2, amount, segmentFare, seatNumbers: ['1', '2'] });
       expect(booking.body.bookingIds).toHaveLength(2);
       expect(new Set(booking.body.bookingIds).size).toBe(2);
       expect(trip.availableSeats).toBe(trip.totalSeats - 2);
       expect(database.bookings.filter((record) => booking.body.bookingIds.includes(record.id)).map((record) => record.amount))
-        .toEqual([route.fareAmount, route.fareAmount]);
+        .toEqual([segmentFare, segmentFare]);
 
       const wrongPaymentAmount = await request(app).post('/api/passenger/payments').set(passengerHeader)
-        .send({ bookingIds: booking.body.bookingIds, amount: route.fareAmount, method: 'card' });
+        .send({ bookingIds: booking.body.bookingIds, amount: segmentFare, method: 'card' });
       expect(wrongPaymentAmount.status).toBe(400);
       expect(wrongPaymentAmount.body.error).toMatch(/total booking amount/);
 
@@ -375,7 +384,7 @@ describe('SmartMove backend API', () => {
       expect(payment.body).toMatchObject({ bookingIds: booking.body.bookingIds, amount, paymentStatus: 'paid' });
       expect(database.bookings.filter((record) => booking.body.bookingIds.includes(record.id)).every((record) => record.status === 'confirmed')).toBe(true);
       expect(database.payments.filter((record) => booking.body.bookingIds.includes(record.bookingId)).map((record) => record.amount))
-        .toEqual([route.fareAmount, route.fareAmount]);
+        .toEqual([segmentFare, segmentFare]);
       expect(passenger.totalBookings).toBe(originalTotalBookings + 2);
     } finally {
       database.bookings.splice(0, database.bookings.length, ...originalBookings);
@@ -383,6 +392,41 @@ describe('SmartMove backend API', () => {
       database.payments.splice(0, database.payments.length, ...originalPayments);
       Object.assign(trip, originalTrip);
       passenger.totalBookings = originalTotalBookings;
+    }
+  });
+
+  it('accepts the exact four-seat total for a fare of 435', async () => {
+    const passenger = database.passengers[0];
+    const trip = database.trips.find((candidate) => candidate.totalSeats >= 4)!;
+    const route = database.routes.find((item) => item.id === trip.routeId)!;
+    const originalFare = route.fareAmount;
+    const originalTrip = { status: trip.status, departureTime: trip.departureTime, availableSeats: trip.availableSeats };
+    const originalBookings = [...database.bookings];
+    const originalBookingStatuses = new Map(database.bookings.map((booking) => [booking.id, booking.status]));
+    const originalPayments = [...database.payments];
+    try {
+      route.fareAmount = 435;
+      trip.status = 'scheduled';
+      trip.departureTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      trip.availableSeats = trip.totalSeats;
+      database.bookings.filter((booking) => booking.tripId === trip.id && ['pending', 'confirmed'].includes(booking.status))
+        .forEach((booking) => { booking.status = 'cancelled'; });
+
+      const response = await request(app).post('/api/passenger/bookings')
+        .set('X-Passenger-Id', String(passenger.id))
+        .send({ tripId: trip.id, seatCount: 4, amount: 1740, pickupPoint: route.origin, dropoffPoint: route.destination });
+
+      expect(response.status).toBe(201);
+      expect(response.body.amount).toBe(1740);
+      expect(response.body.seatCount).toBe(4);
+      expect(database.bookings.filter((booking) => response.body.bookingIds.includes(booking.id))
+        .reduce((total, booking) => total + booking.amount, 0)).toBe(1740);
+    } finally {
+      database.bookings.splice(0, database.bookings.length, ...originalBookings);
+      for (const booking of originalBookings) booking.status = originalBookingStatuses.get(booking.id) ?? booking.status;
+      database.payments.splice(0, database.payments.length, ...originalPayments);
+      Object.assign(trip, originalTrip);
+      route.fareAmount = originalFare;
     }
   });
 

@@ -28,6 +28,7 @@ import StatusBadge from '../components/StatusBadge';
 import SearchableSelect from '../components/SearchableSelect';
 import SearchableDropdown from '../components/SearchableDropdown';
 import { ApiError, API_BASE_URL, apiGet } from '../services/api';
+import { calculateSegmentFare, calculateTotalFare } from '../utils/routeFare';
 import type { Passenger } from '../types';
 
 export type PassengerTab = 'find' | 'bookings' | 'feedback' | 'profile';
@@ -303,8 +304,11 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   const [paymentConfirmation, setPaymentConfirmation] = useState<{ bookingIds: number[]; amount: number } | null>(null);
 
   const selectedSeatCount = Math.max(1, Math.floor(Number(seatCount) || 1));
-  const baseFare = Number(bookingDialogTrip?.fareAmount ?? 0);
-  const totalAmount = baseFare * selectedSeatCount;
+  const fullRouteFare = Number(bookingDialogTrip?.fareAmount ?? 0);
+  const selectedSegmentFare = bookingDialogTrip
+    ? calculateSegmentFare({ ...bookingDialogTrip, stops: routes.find((route) => route.id === bookingDialogTrip.routeId)?.stops }, pickupPoint, dropoffPoint)
+    : null;
+  const totalAmount = calculateTotalFare(selectedSegmentFare ?? 0, selectedSeatCount) ?? 0;
 
   useEffect(() => {
     let active = true;
@@ -550,8 +554,8 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
         setBookingFlowError('Choose a valid date on or before the selected departure.');
         return;
       }
-      if (!pickupPoint || !dropoffPoint || pickupPoint === dropoffPoint) {
-        setBookingFlowError('Choose different pickup and drop-off points.');
+      if (selectedSegmentFare === null) {
+        setBookingFlowError('Choose a pickup stop that comes before your drop-off stop.');
         return;
       }
     }
@@ -584,7 +588,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   };
 
   const confirmJourneyBooking = async () => {
-    if (!bookingDialogTrip || !profile || !isValidDateOnly(travelDate)) return;
+    if (!bookingDialogTrip || !profile || !isValidDateOnly(travelDate) || selectedSegmentFare === null) return;
     setBookingFlowError('');
     setBusyAction('booking');
     try {
@@ -604,6 +608,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
             travelDate,
             pickupPoint,
             dropoffPoint,
+            segmentFare: selectedSegmentFare,
           }),
         });
         const bookingIds = result.bookingIds?.length ? result.bookingIds : result.bookingId ? [result.bookingId] : [];
@@ -947,6 +952,8 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   const journeyStops = bookingDialogTrip
     ? [...new Set([bookingDialogTrip.origin, ...(bookingRoute?.stops ?? []).filter(Boolean), bookingDialogTrip.destination])]
     : [];
+  const pickupStopIndex = journeyStops.findIndex((stop) => stop.trim().toLowerCase() === pickupPoint.trim().toLowerCase());
+  const possibleDropoffStops = pickupStopIndex >= 0 ? journeyStops.slice(pickupStopIndex + 1) : [];
   const bookingWizard = bookingDialogTrip ? (
     <div className="space-y-5" aria-label="Journey booking">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
@@ -1008,7 +1015,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
             <div className="grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2 lg:grid-cols-4">
               <div><p className="text-xs text-slate-500">Route</p><p className="mt-1 font-semibold text-slate-900">{bookingDialogTrip.routeCode}</p></div>
               <div><p className="text-xs text-slate-500">Duration</p><p className="mt-1 flex items-center gap-1 font-semibold text-slate-900"><Clock3 size={14} /> {tripDuration(bookingDialogTrip.departureTime, bookingDialogTrip.arrivalTime) ?? (bookingRoute?.estimatedMinutes ? `${bookingRoute.estimatedMinutes} min` : '—')}</p></div>
-              <div><p className="text-xs text-slate-500">Base fare</p><p className="mt-1 font-semibold text-slate-900">{money(bookingDialogTrip.fareAmount)}</p></div>
+              <div><p className="text-xs text-slate-500">Full route fare</p><p className="mt-1 font-semibold text-slate-900">{money(fullRouteFare)}</p></div>
               <div><p className="text-xs text-slate-500">Seats available</p><p className="mt-1 font-semibold text-slate-900">{bookingDialogTrip.availableSeats} of {bookingDialogTrip.totalSeats}</p></div>
               <div><p className="text-xs text-slate-500">Trip status</p><p className="mt-1 inline-flex rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800">{bookingDialogTrip.status ?? 'Scheduled'}</p></div>
               {(bookingDialogTrip.vehicleRegistration || bookingDialogTrip.driverName) && <div><p className="text-xs text-slate-500">Operator / vehicle</p><p className="mt-1 font-semibold text-slate-900">{bookingDialogTrip.driverName ?? bookingDialogTrip.vehicleRegistration}</p></div>}
@@ -1033,9 +1040,20 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
           <div className="space-y-4">
             <p className="text-sm text-slate-600">Confirm when you plan to travel and choose your boarding and arrival points.</p>
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Travel date</span><input type="date" value={travelDate} onChange={(event) => updateBookingDate(event.target.value)} className={inputClass} aria-label="Booking travel date" /></label>
-              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Pickup point</span><select value={pickupPoint} onChange={(event) => setPickupPoint(event.target.value)} className={inputClass} aria-label="Pickup point">{journeyStops.map((stop, index) => <option key={`${stop}-${index}`} value={stop}>{stop}</option>)}</select></label>
-              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Drop-off point</span><select value={dropoffPoint} onChange={(event) => setDropoffPoint(event.target.value)} className={inputClass} aria-label="Drop-off point">{journeyStops.map((stop, index) => <option key={`${stop}-${index}`} value={stop}>{stop}</option>)}</select></label>
+              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Travel date</span><input type="date" value={travelDate} disabled={Boolean(bookingCheckout)} onChange={(event) => updateBookingDate(event.target.value)} className={inputClass} aria-label="Booking travel date" /></label>
+              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Pickup point</span><select value={pickupPoint} disabled={Boolean(bookingCheckout)} onChange={(event) => {
+                const nextPickup = event.target.value;
+                const nextPickupIndex = journeyStops.findIndex((stop) => stop.trim().toLowerCase() === nextPickup.trim().toLowerCase());
+                const allowedDropoffs = journeyStops.slice(nextPickupIndex + 1);
+                setPickupPoint(nextPickup);
+                if (!allowedDropoffs.some((stop) => stop.trim().toLowerCase() === dropoffPoint.trim().toLowerCase())) setDropoffPoint(allowedDropoffs[0] ?? '');
+                setBookingFlowError('');
+              }} className={inputClass} aria-label="Pickup point">{journeyStops.map((stop, index) => <option key={`${stop}-${index}`} value={stop}>{stop}</option>)}</select></label>
+              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Drop-off point</span><select value={dropoffPoint} disabled={Boolean(bookingCheckout) || !possibleDropoffStops.length} onChange={(event) => { setDropoffPoint(event.target.value); setBookingFlowError(''); }} className={inputClass} aria-label="Drop-off point">{possibleDropoffStops.map((stop, index) => <option key={`${stop}-${index}`} value={stop}>{stop}</option>)}</select></label>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-blue-50 px-4 py-3 text-sm">
+              <span className="text-slate-700">Fare for {pickupPoint || 'pickup'} to {dropoffPoint || 'drop-off'}</span>
+              <strong className="text-blue-800">{selectedSegmentFare === null ? 'Select valid route stops' : money(selectedSegmentFare)}</strong>
             </div>
             <p className="text-xs text-slate-500">Departure: {dateTime(bookingDialogTrip.departureTime)}. The selected travel date must be on or before departure.</p>
           </div>
@@ -1065,7 +1083,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
             </div>
             {seatError && <p role="alert" className={fieldErrorClass}>{seatError}</p>}
             <p className="text-xs text-slate-500">{bookingDialogTrip.availableSeats} seats remain on this trip.</p>
-            <div className="flex max-w-sm justify-between border-t border-slate-100 pt-3 text-sm"><span className="text-slate-600">{money(baseFare)} × {selectedSeatCount}</span><strong className="text-slate-900">{money(totalAmount)}</strong></div>
+            <div className="flex max-w-sm justify-between border-t border-slate-100 pt-3 text-sm"><span className="text-slate-600">Segment fare {money(selectedSegmentFare ?? 0)} × {selectedSeatCount}</span><strong className="text-slate-900">{money(totalAmount)}</strong></div>
           </div>
         )}
 
@@ -1096,6 +1114,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
                 ['Journey', `${bookingDialogTrip.origin} to ${bookingDialogTrip.destination} · ${bookingDialogTrip.routeCode}`],
                 ['Departure', dateTime(bookingDialogTrip.departureTime)], ['Pickup', pickupPoint], ['Drop-off', dropoffPoint],
                 ['Passenger', profile ? `${profile.firstName} ${profile.lastName}` : ''],
+                ['Fare per seat', money(selectedSegmentFare ?? 0)],
                 ['Seats', `${selectedSeatCount}${bookingCheckout?.seatNumbers.length ? ` · ${bookingCheckout.seatNumbers.join(', ')}` : ''}`],
                 ['Payment', paymentMethod.replaceAll('_', ' ')],
               ].map(([label, value]) => <div key={label} className="flex flex-wrap justify-between gap-2 px-4 py-3 text-sm"><dt className="text-slate-500">{label}</dt><dd className="font-semibold capitalize text-slate-900">{value}</dd></div>)}

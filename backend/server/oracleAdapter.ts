@@ -1,4 +1,5 @@
 import oracledb from 'oracledb';
+import { calculateSegmentFare, calculateTotalFare } from '../../src/utils/routeFare.js';
 
 export type DatabaseHealth = { database: 'Oracle'; connected: boolean; mode: 'oracle' | 'demo'; message: string };
 
@@ -325,13 +326,15 @@ export async function oraclePassengerBookSeats(
   tripId: number,
   seatCount: number,
   expectedAmount: number,
+  pickupPoint = '',
+  dropoffPoint = '',
 ): Promise<{ bookingId: number; bookingIds: number[]; seatNumbers: string[]; seatCount: number; amount: number }> {
   if (!Number.isInteger(seatCount) || seatCount < 1) {
     throw Object.assign(new Error('seatCount must be a positive whole number.'), { statusCode: 400 });
   }
   return withPassengerTransaction(async (connection) => {
     const tripResult = await connection.execute<Record<string, unknown>>(
-      `SELECT t.status, t.departure_time, t.total_seats, t.available_seats, r.fare_amount
+      `SELECT t.status, t.departure_time, t.total_seats, t.available_seats, r.route_id, r.origin, r.destination, r.fare_amount
          FROM trips t JOIN routes r ON r.route_id = t.route_id
         WHERE t.trip_id = :tripId FOR UPDATE OF t.available_seats`,
       { tripId },
@@ -360,10 +363,26 @@ export async function oraclePassengerBookSeats(
     if (Number(existingPassengerBooking.rows?.[0]?.BOOKING_COUNT ?? 0) > 0) {
       throw Object.assign(new Error('Passenger already has an active booking on this trip.'), { statusCode: 400 });
     }
-    const fareAmount = Number(trip.FARE_AMOUNT);
-    const totalAmount = Math.round(fareAmount * seatCount * 100) / 100;
-    if (!Number.isFinite(fareAmount) || Math.round(expectedAmount * 100) !== Math.round(totalAmount * 100)) {
-      throw Object.assign(new Error('Booking amount must equal the fare multiplied by the seat count.'), { statusCode: 400 });
+    const stopsResult = await connection.execute<{ STOP_NAME: string }>(
+      'SELECT stop_name FROM route_stops WHERE route_id = :routeId ORDER BY stop_order',
+      { routeId: Number(trip.ROUTE_ID) },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const segmentFare = calculateSegmentFare({
+      origin: String(trip.ORIGIN),
+      destination: String(trip.DESTINATION),
+      stops: (stopsResult.rows ?? []).map((row) => String(row.STOP_NAME)),
+      fareAmount: Number(trip.FARE_AMOUNT),
+    }, pickupPoint, dropoffPoint);
+    if (segmentFare === null) {
+      throw Object.assign(new Error('Pickup point must come before the drop-off point on this route.'), { statusCode: 400 });
+    }
+    const totalAmount = calculateTotalFare(segmentFare, seatCount);
+    if (totalAmount === null) {
+      throw Object.assign(new Error('The fare and seat count could not be calculated.'), { statusCode: 400 });
+    }
+    if (Math.round(expectedAmount * 100) !== Math.round(totalAmount * 100)) {
+      throw Object.assign(new Error('Booking amount must equal the selected route segment fare multiplied by the seat count.'), { statusCode: 400 });
     }
     const occupiedResult = await connection.execute<Record<string, unknown>>(
       `SELECT seat_number FROM bookings
@@ -393,7 +412,7 @@ export async function oraclePassengerBookSeats(
       await connection.execute(
         `INSERT INTO bookings (booking_id, trip_id, passenger_id, seat_number, booking_date, status, amount)
          VALUES (:bookingId, :tripId, :passengerId, :seatNumber, SYSDATE, 'pending', :amount)`,
-        { bookingId, tripId, passengerId, seatNumber, amount: fareAmount },
+        { bookingId, tripId, passengerId, seatNumber, amount: segmentFare },
       );
       bookingIds.push(bookingId);
     }

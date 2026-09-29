@@ -40,7 +40,13 @@ afterEach(() => vi.unstubAllGlobals());
 describe('Driver dashboard', () => {
   it('sends the acting-driver header, loads summary tabs, and confirms a server-authorized start', async () => {
     render(<DriverDashboard />);
-    fireEvent.change(screen.getByLabelText('Acting driver ID'), { target: { value: '3' } });
+    const driverInput = await screen.findByLabelText('Driver profile');
+    fireEvent.click(driverInput);
+    fireEvent.change(driverInput, { target: { value: 'Sunil' } });
+    await waitFor(() => {
+      expect(screen.getByText('Sunil Fernando')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText('Sunil Fernando'));
 
     expect(await screen.findByRole('heading', { name: 'Welcome, Sunil' })).toBeInTheDocument();
     expect(screen.getByText('WP-ABC-1234')).toBeInTheDocument();
@@ -61,7 +67,14 @@ describe('Driver dashboard', () => {
     mockMode = 'demo';
     render(<DriverDashboard />);
     const driverInput = await screen.findByLabelText('Driver profile');
+    // Click to open dropdown and clear any existing selection
+    fireEvent.click(driverInput);
+    // Type to search
     fireEvent.change(driverInput, { target: { value: 'Sunil' } });
+    await waitFor(() => {
+      expect(screen.getByText('Sunil Fernando')).toBeInTheDocument();
+    });
+    // Click on the filtered result
     fireEvent.click(screen.getByText('Sunil Fernando'));
     expect(await screen.findByRole('heading', { name: 'Welcome, Sunil' })).toBeInTheDocument();
 

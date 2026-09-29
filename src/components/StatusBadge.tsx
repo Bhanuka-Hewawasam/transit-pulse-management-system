@@ -1,7 +1,17 @@
-// File: d:\Robo_Mob\Robo-Controller\smartmove\src\components\StatusBadge.tsx
+// File: d:\Projects\DM-Project\transit-pulse-management-system\src\components\StatusBadge.tsx
 
 import React from 'react';
-import { AlertCircle } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  XCircle,
+  Calendar,
+  RotateCcw,
+  Wrench,
+  Moon,
+  CreditCard,
+} from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -19,96 +29,77 @@ interface StatusBadgeProps {
   type?: BadgeType;
 }
 
-// ─── Color mapping ────────────────────────────────────────────────────────────
-
-/**
- * Describes the visual style of a badge variant.
- */
 interface BadgeStyle {
   bg: string;
   text: string;
   ring: string;
-  showIcon?: boolean; // show an exclamation icon (overdue, etc.)
+  icon: React.ReactNode;
 }
 
-/**
- * Maps a normalised status string to its badge style.
- * The key is the lowercase/underscore form of the status value.
- */
+// ─── Color & Icon mapping ───────────────────────────────────────────────────
+
 const STATUS_STYLES: Record<string, BadgeStyle> = {
-  // ── Green ──────────────────────────────────────────────────────────────────
-  active:      { bg: '#dcfce7', text: '#166534', ring: '#bbf7d0' },
-  confirmed:   { bg: '#dcfce7', text: '#166534', ring: '#bbf7d0' },
-  paid:        { bg: '#dcfce7', text: '#166534', ring: '#bbf7d0' },
-  completed:   { bg: '#dcfce7', text: '#166534', ring: '#bbf7d0' },
-  available:   { bg: '#dcfce7', text: '#166534', ring: '#bbf7d0' },
+  // ── Green / Success ────────────────────────────────────────────────────────
+  active:      { bg: '#ecfdf5', text: '#047857', ring: '#a7f3d0', icon: <CheckCircle2 size={12} className="shrink-0" /> },
+  confirmed:   { bg: '#ecfdf5', text: '#047857', ring: '#a7f3d0', icon: <CheckCircle2 size={12} className="shrink-0" /> },
+  paid:        { bg: '#ecfdf5', text: '#047857', ring: '#a7f3d0', icon: <CreditCard size={12} className="shrink-0" /> },
+  completed:   { bg: '#ecfdf5', text: '#047857', ring: '#a7f3d0', icon: <CheckCircle2 size={12} className="shrink-0" /> },
+  available:   { bg: '#ecfdf5', text: '#047857', ring: '#a7f3d0', icon: <CheckCircle2 size={12} className="shrink-0" /> },
 
-  // ── Amber / Yellow ─────────────────────────────────────────────────────────
-  maintenance:  { bg: '#fef9c3', text: '#854d0e', ring: '#fef08a' },
-  in_progress:  { bg: '#fef9c3', text: '#854d0e', ring: '#fef08a' },
-  on_trip:      { bg: '#fef9c3', text: '#854d0e', ring: '#fef08a' },
-  pending:      { bg: '#fef9c3', text: '#854d0e', ring: '#fef08a' },
+  // ── Amber / Warning / Pending ──────────────────────────────────────────────
+  maintenance:  { bg: '#fffbeb', text: '#b45309', ring: '#fde68a', icon: <Wrench size={12} className="shrink-0" /> },
+  in_progress:  { bg: '#fffbeb', text: '#b45309', ring: '#fde68a', icon: <Clock size={12} className="shrink-0" /> },
+  on_trip:      { bg: '#fffbeb', text: '#b45309', ring: '#fde68a', icon: <Clock size={12} className="shrink-0" /> },
+  pending:      { bg: '#fffbeb', text: '#b45309', ring: '#fde68a', icon: <Clock size={12} className="shrink-0" /> },
+  unpaid:       { bg: '#fffbeb', text: '#b45309', ring: '#fde68a', icon: <AlertCircle size={12} className="shrink-0" /> },
 
-  // ── Red ────────────────────────────────────────────────────────────────────
-  inactive:    { bg: '#fee2e2', text: '#991b1b', ring: '#fecaca' },
-  cancelled:   { bg: '#fee2e2', text: '#991b1b', ring: '#fecaca' },
-  suspended:   { bg: '#fee2e2', text: '#991b1b', ring: '#fecaca' },
-  failed:      { bg: '#fee2e2', text: '#991b1b', ring: '#fecaca' },
+  // ── Red / Danger ───────────────────────────────────────────────────────────
+  inactive:    { bg: '#fef2f2', text: '#b91c1c', ring: '#fecaca', icon: <XCircle size={12} className="shrink-0" /> },
+  cancelled:   { bg: '#fef2f2', text: '#b91c1c', ring: '#fecaca', icon: <XCircle size={12} className="shrink-0" /> },
+  suspended:   { bg: '#fef2f2', text: '#b91c1c', ring: '#fecaca', icon: <XCircle size={12} className="shrink-0" /> },
+  failed:      { bg: '#fef2f2', text: '#b91c1c', ring: '#fecaca', icon: <XCircle size={12} className="shrink-0" /> },
+  overdue:     { bg: '#fef2f2', text: '#b91c1c', ring: '#fecaca', icon: <AlertCircle size={12} className="shrink-0" /> },
 
-  // ── Red + icon ─────────────────────────────────────────────────────────────
-  overdue:     { bg: '#fee2e2', text: '#991b1b', ring: '#fecaca', showIcon: true },
-
-  // ── Blue ───────────────────────────────────────────────────────────────────
-  scheduled:   { bg: '#dbeafe', text: '#1e40af', ring: '#bfdbfe' },
+  // ── Blue / Info ────────────────────────────────────────────────────────────
+  scheduled:   { bg: '#eff6ff', text: '#1d4ed8', ring: '#bfdbfe', icon: <Calendar size={12} className="shrink-0" /> },
 
   // ── Purple ─────────────────────────────────────────────────────────────────
-  refunded:    { bg: '#ede9fe', text: '#5b21b6', ring: '#ddd6fe' },
+  refunded:    { bg: '#f5f3ff', text: '#6d28d9', ring: '#ddd6fe', icon: <RotateCcw size={12} className="shrink-0" /> },
 
-  // ── Gray ───────────────────────────────────────────────────────────────────
-  off_duty:    { bg: '#f3f4f6', text: '#374151', ring: '#e5e7eb' },
+  // ── Gray / Neutral ─────────────────────────────────────────────────────────
+  off_duty:    { bg: '#f3f4f6', text: '#374151', ring: '#e5e7eb', icon: <Moon size={12} className="shrink-0" /> },
 };
 
-/** Fallback style for unknown statuses */
 const FALLBACK_STYLE: BadgeStyle = {
   bg: '#f3f4f6',
   text: '#374151',
   ring: '#e5e7eb',
+  icon: <Clock size={12} className="shrink-0" />,
 };
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-/**
- * StatusBadge – renders a pill badge whose colour is determined by the
- * status value. The optional `type` prop is reserved for future per-domain
- * overrides but the colour lookup is status-driven today.
- */
 const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type: _type }) => {
-  // Normalise: lowercase + replace spaces/hyphens with underscores
   const normalised = status.toLowerCase().replace(/[\s-]+/g, '_');
   const style = STATUS_STYLES[normalised] ?? FALLBACK_STYLE;
 
   return (
     <span
       className="
-        inline-flex items-center gap-1
-        px-2.5 py-0.5
+        inline-flex items-center gap-1.5
+        px-2.5 py-1
         rounded-full
-        text-xs font-medium uppercase tracking-wide
-        ring-1 ring-inset
+        text-xs font-semibold uppercase tracking-wider
+        shadow-xs transition-colors
       "
       style={{
         backgroundColor: style.bg,
         color:           style.text,
-        // Tailwind ring-1 ring-inset colours need to be set inline because
-        // we are using arbitrary hex values.
         boxShadow: `inset 0 0 0 1px ${style.ring}`,
       }}
     >
-      {style.showIcon && (
-        <AlertCircle size={11} className="shrink-0" />
-      )}
-      {/* Display original status with underscores swapped for spaces */}
-      {status.replace(/_/g, ' ')}
+      {style.icon}
+      <span>{status.replace(/_/g, ' ')}</span>
     </span>
   );
 };

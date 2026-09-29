@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { ChevronDown, X } from 'lucide-react';
+import { ChevronDown, Search, X } from 'lucide-react';
 
 interface SearchableSelectOption {
   value: string | number;
@@ -18,8 +18,6 @@ interface SearchableSelectProps {
   ariaLabel?: string;
 }
 
-const inputClass = 'w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-100';
-
 const SearchableSelect: React.FC<SearchableSelectProps> = ({
   value,
   onChange,
@@ -32,34 +30,58 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const selectedOption = options.find(opt => String(opt.value) === String(value));
 
-  const filteredOptions = options.filter(option => {
-    const query = searchQuery.toLowerCase();
-    return (
-      option.label.toLowerCase().includes(query) ||
-      (option.secondaryLabel && option.secondaryLabel.toLowerCase().includes(query)) ||
-      String(option.value).toLowerCase().includes(query)
-    );
-  });
+  const filteredOptions = searchQuery.trim()
+    ? options.filter(option => {
+        const query = searchQuery.toLowerCase();
+        return (
+          option.label.toLowerCase().includes(query) ||
+          (option.secondaryLabel && option.secondaryLabel.toLowerCase().includes(query)) ||
+          String(option.value).toLowerCase().includes(query)
+        );
+      })
+    : options;
 
-  const handleSelect = (optionValue: string | number) => {
-    onChange(optionValue);
+  const openDropdown = () => {
+    if (disabled) return;
+    setIsOpen(true);
+    setSearchQuery('');
+    setTimeout(() => searchInputRef.current?.focus(), 10);
+  };
+
+  const closeDropdown = () => {
     setIsOpen(false);
     setSearchQuery('');
   };
 
-  const handleClear = () => {
+  const handleSelect = (optionValue: string | number) => {
+    onChange(optionValue);
+    closeDropdown();
+    triggerRef.current?.focus();
+  };
+
+  const handleClear = (e: React.MouseEvent) => {
+    e.stopPropagation();
     onChange('');
-    inputRef.current?.focus();
+    closeDropdown();
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      closeDropdown();
+      triggerRef.current?.focus();
+    } else if (e.key === 'Enter' && filteredOptions.length === 1) {
+      handleSelect(filteredOptions[0].value);
+    }
   };
 
   const handleClickOutside = useCallback((event: MouseEvent) => {
     if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-      setIsOpen(false);
-      setSearchQuery('');
+      closeDropdown();
     }
   }, []);
 
@@ -82,79 +104,103 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
 
   return (
     <div ref={containerRef} className={`relative ${className}`}>
-      <div className="relative">
-        <input
-          ref={inputRef}
-          type="text"
-          value={isOpen ? searchQuery : selectedOption?.label || ''}
-          onChange={(e) => {
-            setSearchQuery(e.target.value);
-            if (!isOpen) setIsOpen(true);
-          }}
-          onFocus={() => setIsOpen(true)}
-          placeholder={placeholder}
-          disabled={disabled}
-          className={`${inputClass} pr-20`}
-          aria-label={ariaLabel}
-          aria-expanded={isOpen}
-          aria-haspopup="listbox"
-        />
-        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-          {value && !isOpen && (
-            <button
-              type="button"
-              onClick={handleClear}
-              className="p-1 text-gray-400 hover:text-gray-600 rounded hover:bg-gray-100"
+      {/* ── Trigger button ─────────────────────────────────────── */}
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={openDropdown}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-expanded={isOpen}
+        aria-haspopup="listbox"
+        className="w-full flex items-center justify-between gap-2 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-left focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-100 hover:border-gray-400 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+      >
+        <span className={`flex-1 truncate ${selectedOption ? 'text-gray-900' : 'text-gray-400'}`}>
+          {selectedOption ? selectedOption.label : placeholder}
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          {value && (
+            <span
+              role="button"
+              tabIndex={0}
               aria-label="Clear selection"
+              onMouseDown={handleClear}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClear(e as unknown as React.MouseEvent); }}
+              className="rounded p-0.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
             >
-              <X size={14} />
-            </button>
+              <X size={13} />
+            </span>
           )}
-          <button
-            type="button"
-            onClick={() => {
-              setIsOpen(!isOpen);
-              if (!isOpen) inputRef.current?.focus();
-            }}
-            className="p-1 text-gray-400 hover:text-gray-600 rounded hover:bg-gray-100"
-            aria-label={isOpen ? 'Close dropdown' : 'Open dropdown'}
-          >
-            <ChevronDown size={14} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-          </button>
-        </div>
-      </div>
+          <ChevronDown
+            size={14}
+            className={`text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          />
+        </span>
+      </button>
 
+      {/* ── Dropdown panel ─────────────────────────────────────── */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg max-h-60 overflow-y-auto">
-          {filteredOptions.length === 0 ? (
-            <div className="px-3 py-4 text-sm text-gray-500 text-center">
-              No matches found
+        <div className="absolute z-50 mt-1 w-full min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg">
+          {/* Search input pinned at the top of the list */}
+          <div className="border-b border-gray-100 p-2">
+            <div className="relative">
+              <Search
+                size={14}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+              />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                placeholder="Search by name…"
+                aria-label="Search options"
+                autoComplete="off"
+                className="w-full rounded border border-gray-200 bg-gray-50 py-1.5 pl-8 pr-3 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
             </div>
-          ) : (
-            <ul role="listbox" className="py-1">
-              {filteredOptions.map((option) => (
-                <li
-                  key={option.value}
-                  role="option"
-                  aria-selected={String(value) === String(option.value)}
-                  onClick={() => handleSelect(option.value)}
-                  className={`px-3 py-2 cursor-pointer flex items-center gap-3 hover:bg-blue-50 transition-colors ${
-                    String(value) === String(option.value) ? 'bg-blue-50 text-blue-900' : 'text-gray-900'
-                  }`}
-                >
-                  <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-800 font-semibold text-xs shrink-0">
-                    {option.initials || getInitials(option.label)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{option.label}</div>
-                    {option.secondaryLabel && (
-                      <div className="text-xs text-gray-500 truncate">{option.secondaryLabel}</div>
+          </div>
+
+          {/* Options */}
+          <div className="max-h-56 overflow-y-auto">
+            {filteredOptions.length === 0 ? (
+              <p className="px-3 py-4 text-center text-sm text-gray-500">No matches</p>
+            ) : (
+              <ul role="listbox" aria-label={ariaLabel} className="py-1">
+                {filteredOptions.map((option) => (
+                  <li
+                    key={option.value}
+                    role="option"
+                    aria-selected={String(value) === String(option.value)}
+                    onClick={() => handleSelect(option.value)}
+                    className={`flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors hover:bg-blue-50 ${
+                      String(value) === String(option.value)
+                        ? 'bg-blue-50 text-blue-900'
+                        : 'text-gray-900'
+                    }`}
+                  >
+                    <div className="h-8 w-8 shrink-0 rounded-full bg-blue-100 flex items-center justify-center text-blue-800 font-semibold text-xs">
+                      {option.initials || getInitials(option.label)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{option.label}</div>
+                      {option.secondaryLabel && (
+                        <div className="text-xs text-gray-500 truncate">{option.secondaryLabel}</div>
+                      )}
+                    </div>
+                    {String(value) === String(option.value) && (
+                      <span className="shrink-0 text-blue-700">
+                        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+                          <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
+                        </svg>
+                      </span>
                     )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       )}
     </div>

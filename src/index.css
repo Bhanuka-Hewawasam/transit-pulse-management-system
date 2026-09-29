@@ -6,22 +6,42 @@
   --sm-blue:   #1a5fb4;
   --sm-sky:    #3584e4;
   --sm-orange: #e66000;
-  --sm-light:  #f4f6fb;
+  --sm-light:  #f8fafc;
 }
 
 body {
   font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
   background-color: var(--sm-light);
-  color: #1a1a2e;
+  color: #0f172a;
   margin: 0;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Scrollbar styling */
-::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: #f1f5f9; }
-::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #64748b; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 /* Table base styles */
 table { border-collapse: collapse; width: 100%; }
 th { font-weight: 600; }
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-scaleIn {
+  animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

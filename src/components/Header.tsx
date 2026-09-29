@@ -1,50 +1,77 @@
-// File: d:\Robo_Mob\Robo-Controller\smartmove\src\components\Header.tsx
+// File: d:\Projects\DM-Project\transit-pulse-management-system\src\components\Header.tsx
 
 import React, { useState, useEffect } from 'react';
 import { Clock, Menu } from 'lucide-react';
 import SearchBar from './SearchBar';
+import SearchableSelect from './SearchableSelect';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+export interface HeaderSelectOption {
+  value: string;
+  label: string;
+  secondaryLabel?: string;
+  initials?: string;
+}
+
 interface HeaderProps {
-  /** The page name displayed as the header title, e.g. 'Dashboard' */
   currentPage: string;
   onOpenMenu: () => void;
   searchValue: string;
   onSearchValueChange: (value: string) => void;
   role: 'admin' | 'passenger' | 'driver';
   onRoleChange: (role: 'admin' | 'passenger' | 'driver') => void;
+  mode?: 'oracle' | 'demo' | null;
+  selectProps?: {
+    value: string;
+    onChange: (value: string) => void;
+    options: HeaderSelectOption[];
+    placeholder: string;
+    ariaLabel: string;
+    selectedName?: string;
+  };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/**
- * Returns a human-readable title from a page identifier string.
- * e.g. 'mongodb' → 'MongoDB Content', 'vehicles' → 'Vehicles'
- */
-function formatPageTitle(page: string): string {
+function formatPageTitle(page: string, role: 'admin' | 'passenger' | 'driver'): string {
+  if (role === 'passenger') {
+    const map: Record<string, string> = {
+      find: 'Find a Trip',
+      bookings: 'My Bookings',
+      feedback: 'Trip Feedback',
+      profile: 'My Profile',
+    };
+    return map[page] ?? 'Passenger Dashboard';
+  }
+  if (role === 'driver') {
+    const map: Record<string, string> = {
+      trips: 'My Trips',
+      vehicle: 'Assigned Vehicle',
+      feedback: 'Passenger Rating',
+      profile: 'Driver Profile',
+    };
+    return map[page] ?? 'Driver Dashboard';
+  }
+
   const overrides: Record<string, string> = {
-    dashboard:     'Dashboard',
-    vehicles:      'Vehicles',
-    drivers:       'Drivers',
-    routes:        'Routes',
-    passengers:    'Passengers',
-    trips:         'Trips',
-    bookings:      'Bookings',
-    payments:      'Payments',
-    maintenance:   'Maintenance',
-    feedback:      'Feedback',
-    reports:       'Reports',
+    dashboard:     'Dashboard Overview',
+    vehicles:      'Vehicles Management',
+    drivers:       'Drivers Directory',
+    routes:        'Transit Routes',
+    passengers:    'Passengers Directory',
+    trips:         'Scheduled Trips',
+    bookings:      'Passenger Bookings',
+    payments:      'Payment History',
+    maintenance:   'Fleet Maintenance',
+    feedback:      'Feedback & Ratings',
+    reports:       'System Reports',
     mongodb:       'MongoDB Content',
-    documentation: 'Documentation',
+    documentation: 'Documentation & API',
   };
   return overrides[page] ?? page.charAt(0).toUpperCase() + page.slice(1);
 }
 
-/**
- * Formats a Date object into a readable date/time string.
- * e.g. "Thu, 24 Sep 2026  22:15:04"
- */
 function formatDateTime(date: Date): string {
   const dayNames  = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -61,64 +88,136 @@ function formatDateTime(date: Date): string {
   return `${dayName}, ${day} ${month} ${year}  ${hh}:${mm}:${ss}`;
 }
 
+function getInitials(name?: string): string {
+  if (!name) return 'SM';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 /**
- * Header – shared Admin shell bar with page title, search, role selector,
- * clock, version label and avatar.
+ * Header – Shared top bar across Admin, Passenger, and Driver roles.
+ * Includes page title, search, role switcher, SearchableSelect slot for acting passenger/driver,
+ * mode status pill, live clock, and user avatar.
  */
-const Header: React.FC<HeaderProps> = ({ currentPage, onOpenMenu, searchValue, onSearchValueChange, role, onRoleChange }) => {
+const Header: React.FC<HeaderProps> = ({
+  currentPage,
+  onOpenMenu,
+  searchValue,
+  onSearchValueChange,
+  role,
+  onRoleChange,
+  mode,
+  selectProps,
+}) => {
   const [now, setNow] = useState<Date>(new Date());
 
-  // Update the clock every second
   useEffect(() => {
     const timerId = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timerId);
   }, []);
 
+  const initials = getInitials(selectProps?.selectedName);
+
   return (
     <header
-      className="fixed inset-x-0 top-0 z-20 flex h-16 items-center gap-3 border-b border-gray-200 bg-white px-3 shadow-sm sm:px-5 md:left-64 md:px-6"
+      className="fixed inset-x-0 top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 shadow-xs sm:px-6 md:left-64"
+      style={{ height: '64px' }}
     >
-      {/* ── Left: page title ── */}
-      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-        <button type="button" onClick={onOpenMenu} aria-label="Open navigation" className="flex h-9 w-9 items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-700 md:hidden"><Menu size={19} /></button>
-        <h1 className="hidden text-lg font-semibold sm:block sm:text-xl" style={{ color: '#0f2044' }}>
-          {formatPageTitle(currentPage)}
-        </h1>
-        <h1 className="text-base font-semibold sm:hidden" style={{ color: '#0f2044' }}>{formatPageTitle(currentPage)}</h1>
+      {/* ── Left: hamburger & page title ── */}
+      <div className="flex shrink-0 items-center gap-3">
+        <button
+          type="button"
+          onClick={onOpenMenu}
+          aria-label="Open navigation"
+          className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600 md:hidden"
+        >
+          <Menu size={19} />
+        </button>
+        <div>
+          <h1 className="text-base font-bold text-slate-900 sm:text-lg" style={{ color: '#0f2044' }}>
+            {formatPageTitle(currentPage, role)}
+          </h1>
+          <p className="hidden text-xs text-slate-500 sm:block">
+            SmartMove Transport System
+          </p>
+        </div>
       </div>
 
-      <div className="min-w-0 flex-1"><SearchBar value={searchValue} onChange={onSearchValueChange} placeholder={`Search ${formatPageTitle(currentPage).toLowerCase()}…`} className="mx-auto max-w-md" /></div>
+      {/* ── Middle: Search bar (admin mode or optional) ── */}
+      {role === 'admin' && (
+        <div className="hidden min-w-0 flex-1 max-w-sm lg:block">
+          <SearchBar
+            value={searchValue}
+            onChange={onSearchValueChange}
+            placeholder={`Search ${formatPageTitle(currentPage, role).toLowerCase()}…`}
+          />
+        </div>
+      )}
 
-      {/* ── Right: role selector, clock, version badge, avatar ── */}
-      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-        <label className="sr-only" htmlFor="header-role-select">Demo role</label>
-        <select id="header-role-select" value={role} onChange={(event) => onRoleChange(event.target.value as HeaderProps['role'])} className="w-24 rounded-md border border-gray-200 bg-white px-2 py-2 text-xs text-gray-700 outline-none transition-colors hover:border-gray-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 sm:w-auto sm:px-3 sm:text-sm" aria-label="Demo role">
-          <option value="admin">Admin demo</option><option value="passenger">Passenger demo</option><option value="driver">Driver demo</option>
-        </select>
-        <div className="hidden items-center gap-1.5 text-gray-500 xl:flex">
+      {/* ── Right: SearchableSelect, Role switcher, Mode Badge, Clock, User Avatar ── */}
+      <div className="flex shrink-0 items-center gap-2.5 sm:gap-3">
+        {/* Mode indicator pill */}
+        {mode && (
+          <span
+            className={`hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wider sm:inline-flex ${
+              mode === 'oracle'
+                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+                : 'bg-blue-50 text-blue-700 ring-1 ring-blue-200'
+            }`}
+            role="status"
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${mode === 'oracle' ? 'bg-emerald-500' : 'bg-blue-500'}`} />
+            {mode} mode
+          </span>
+        )}
+
+        {/* Passenger / Driver SearchableSelect when active */}
+        {selectProps && (
+          <div className="w-44 sm:w-56 lg:w-64">
+            <SearchableSelect
+              value={selectProps.value}
+              onChange={(val) => selectProps.onChange(String(val))}
+              options={selectProps.options}
+              placeholder={selectProps.placeholder}
+              ariaLabel={selectProps.ariaLabel}
+            />
+          </div>
+        )}
+
+        {/* Role selector dropdown */}
+        <div className="relative">
+          <label className="sr-only" htmlFor="header-role-select">Demo role</label>
+          <select
+            id="header-role-select"
+            value={role}
+            onChange={(event) => onRoleChange(event.target.value as HeaderProps['role'])}
+            className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 outline-none transition-all hover:bg-white hover:border-slate-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 sm:px-3 sm:text-sm"
+            aria-label="Demo role"
+          >
+            <option value="admin">Admin Portal</option>
+            <option value="passenger">Passenger Portal</option>
+            <option value="driver">Driver Portal</option>
+          </select>
+        </div>
+
+        {/* Clock */}
+        <div className="hidden items-center gap-1.5 text-slate-500 xl:flex">
           <Clock size={14} className="shrink-0" />
-          <span className="text-xs font-mono">
+          <span className="text-xs font-mono text-slate-600">
             {formatDateTime(now)}
           </span>
         </div>
 
-        {/* Version label */}
-        <span
-          className="hidden 2xl:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold"
-          style={{ backgroundColor: '#f4f6fb', color: '#1a5fb4' }}
-        >
-          SmartMove TMS v1.0
-        </span>
-
-        {/* User avatar */}
+        {/* User avatar with initials */}
         <div
-          className="flex h-9 w-9 select-none items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-offset-1"
+          className="flex h-9 w-9 select-none items-center justify-center rounded-full text-xs font-bold text-white shadow-xs ring-2 ring-offset-1 transition-transform hover:scale-105"
           style={{ backgroundColor: '#1a5fb4', boxShadow: '0 0 0 2px #3584e4' }}
-          title="SmartMove Admin"
+          title={selectProps?.selectedName ? `${selectProps.selectedName} (${role})` : `SmartMove User (${role})`}
         >
-          SM
+          {initials}
         </div>
       </div>
     </header>

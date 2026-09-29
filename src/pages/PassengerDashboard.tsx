@@ -1,5 +1,22 @@
+// File: d:\Projects\DM-Project\transit-pulse-management-system\src\pages\PassengerDashboard.tsx
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, CalendarDays, CheckCircle2, CreditCard, LockKeyhole, MapPin, Ticket, X, Star } from 'lucide-react';
+import {
+  ArrowRight,
+  CalendarDays,
+  CheckCircle2,
+  CreditCard,
+  LockKeyhole,
+  MapPin,
+  Ticket,
+  X,
+  Star,
+  Search,
+  MessageSquare,
+  UserCheck,
+  Sparkles,
+  AlertTriangle,
+} from 'lucide-react';
 import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
 import SearchableSelect from '../components/SearchableSelect';
@@ -7,6 +24,25 @@ import SearchableDropdown from '../components/SearchableDropdown';
 import { useDebounce } from '../hooks/useDebounce';
 import { ApiError, API_BASE_URL, apiGet } from '../services/api';
 import type { Passenger } from '../types';
+
+export type PassengerTab = 'find' | 'bookings' | 'feedback' | 'profile';
+
+interface PassengerDashboardProps {
+  inSharedLayout?: boolean;
+  activeTab?: PassengerTab;
+  onTabChange?: (tab: PassengerTab) => void;
+  passengerId?: string;
+  onPassengerIdChange?: (id: string) => void;
+  onSelectPropsChange?: (props: {
+    value: string;
+    onChange: (val: string) => void;
+    options: Array<{ value: string; label: string; secondaryLabel?: string; initials?: string }>;
+    placeholder: string;
+    ariaLabel: string;
+    selectedName?: string;
+  }) => void;
+  onModeChange?: (mode: 'oracle' | 'demo') => void;
+}
 
 type PassengerTrip = {
   tripId: number;
@@ -60,7 +96,6 @@ type PassengerProfile = {
 type ProfileDraft = Pick<PassengerProfile, 'firstName' | 'lastName' | 'phone' | 'address'>;
 type Toast = { kind: 'success' | 'error'; text: string };
 type ContentItem = { title: string; detail: string };
-type PassengerTab = 'find' | 'bookings' | 'feedback' | 'profile';
 type FeedbackDraft = { rating: string; category: string; comment: string; error?: string };
 
 const paymentMethods = ['card', 'cash', 'online', 'bank_transfer'];
@@ -70,8 +105,8 @@ const dateTime = (value?: string | null) => value
   ? new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
   : '—';
 const routeTitle = (item: { routeCode?: string; origin?: string; destination?: string }) => `${item.routeCode ?? 'Route'} · ${item.origin ?? ''} to ${item.destination ?? ''}`;
-const inputClass = 'w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-100';
-const fieldErrorClass = 'mt-1 text-xs text-red-700';
+const inputClass = 'w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 shadow-2xs transition-colors focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100';
+const fieldErrorClass = 'mt-1 text-xs font-semibold text-rose-600';
 
 const dialogFocusableElements = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -112,16 +147,41 @@ const tripDuration = (departure: string, arrival: string) => {
   return [hours ? `${hours}h` : '', remainingMinutes ? `${remainingMinutes}m` : ''].filter(Boolean).join(' ');
 };
 
-const EmptyState: React.FC<{ icon: React.ReactNode; message: string }> = ({ icon, message }) => (
-  <div className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white p-5 text-center text-gray-500">
-    <span className="text-blue-800">{icon}</span><p className="text-sm">{message}</p>
+const EmptyState: React.FC<{ icon: React.ReactNode; title?: string; message: string; action?: React.ReactNode }> = ({ icon, title, message, action }) => (
+  <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-2xs">
+    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50 text-blue-700 shadow-2xs">
+      {icon}
+    </div>
+    <div className="max-w-md space-y-1">
+      {title && <h3 className="text-base font-bold text-slate-900">{title}</h3>}
+      <p className="text-sm text-slate-600">{message}</p>
+    </div>
+    {action && <div className="mt-2">{action}</div>}
+  </div>
+);
+
+const SkeletonCard: React.FC = () => (
+  <div className="animate-pulse space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+    <div className="flex items-center justify-between">
+      <div className="h-5 w-36 rounded-md bg-slate-200" />
+      <div className="h-4 w-16 rounded-full bg-slate-200" />
+    </div>
+    <div className="h-4 w-48 rounded-md bg-slate-100" />
+    <div className="h-2.5 w-full rounded-full bg-slate-100" />
+    <div className="flex items-center justify-between pt-2">
+      <div className="h-6 w-24 rounded-md bg-slate-200" />
+      <div className="h-9 w-20 rounded-lg bg-slate-200" />
+    </div>
   </div>
 );
 
 const SummaryCard: React.FC<{ icon: React.ReactNode; label: string; value: number }> = ({ icon, label, value }) => (
-  <article className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-    <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium text-gray-600">{label}</span><span className="rounded-md bg-blue-50 p-2 text-blue-800">{icon}</span></div>
-    <p className="mt-3 text-2xl font-bold text-gray-900">{value}</p>
+  <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs transition-all duration-200 hover:shadow-xs">
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</span>
+      <span className="rounded-lg bg-blue-50 p-2 text-blue-700">{icon}</span>
+    </div>
+    <p className="mt-3 text-2xl font-bold text-slate-900">{value}</p>
   </article>
 );
 
@@ -149,10 +209,25 @@ async function passengerApi<T>(passengerId: string, path: string, init: RequestI
   return body as T;
 }
 
-const PassengerDashboard: React.FC = () => {
+const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
+  inSharedLayout = false,
+  activeTab: externalActiveTab,
+  onTabChange,
+  passengerId: externalPassengerId,
+  onPassengerIdChange,
+  onSelectPropsChange,
+  onModeChange,
+}) => {
   const [applicationMode, setApplicationMode] = useState<'oracle' | 'demo' | null>(null);
   const [passengers, setPassengers] = useState<Passenger[]>([]);
-  const [passengerId, setPassengerId] = useState('');
+  const [internalPassengerId, setInternalPassengerId] = useState('');
+  const passengerId = externalPassengerId ?? internalPassengerId;
+
+  const setPassengerId = (id: string) => {
+    if (onPassengerIdChange) onPassengerIdChange(id);
+    else setInternalPassengerId(id);
+  };
+
   const [profile, setProfile] = useState<PassengerProfile | null>(null);
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({ firstName: '', lastName: '', phone: '', address: '' });
   const [bookings, setBookings] = useState<PassengerBooking[]>([]);
@@ -165,7 +240,14 @@ const PassengerDashboard: React.FC = () => {
   const [availableDates, setAvailableDates] = useState<string[]>([]);
   const debouncedOrigin = useDebounce(origin, 300);
   const debouncedDestination = useDebounce(destination, 300);
-  const [activeTab, setActiveTab] = useState<PassengerTab>('find');
+
+  const [internalActiveTab, setInternalActiveTab] = useState<PassengerTab>('find');
+  const activeTab = externalActiveTab ?? internalActiveTab;
+  const setActiveTab = (tab: PassengerTab) => {
+    if (onTabChange) onTabChange(tab);
+    else setInternalActiveTab(tab);
+  };
+
   const [tripRefresh, setTripRefresh] = useState(0);
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -194,7 +276,9 @@ const PassengerDashboard: React.FC = () => {
     apiGet<{ mode: 'oracle' | 'demo' }>('/health/databases').then(async (health) => {
       if (!active) return;
       setApplicationMode(health.mode);
-      if (health.mode === 'demo') setPassengers(await apiGet<Passenger[]>('/passengers'));
+      if (onModeChange) onModeChange(health.mode);
+      const list = await apiGet<Passenger[]>('/passengers');
+      if (active) setPassengers(list);
     }).catch((error: Error) => {
       if (active) setPageError(error.message);
     }).finally(() => {
@@ -212,6 +296,27 @@ const PassengerDashboard: React.FC = () => {
 
     return () => { active = false; };
   }, []);
+
+  // Sync SearchableSelect props up to Header Top Bar
+  useEffect(() => {
+    if (!onSelectPropsChange) return;
+    const selectedPassenger = passengers.find(p => String(p.id) === String(passengerId));
+    const selectedName = selectedPassenger ? `${selectedPassenger.firstName} ${selectedPassenger.lastName}` : undefined;
+
+    onSelectPropsChange({
+      value: passengerId,
+      onChange: (val: string) => selectPassenger(val),
+      options: passengers.map((p) => ({
+        value: String(p.id),
+        label: `${p.firstName} ${p.lastName}`,
+        secondaryLabel: `#${p.id} · ${p.email}`,
+        initials: `${p.firstName[0]}${p.lastName[0]}`,
+      })),
+      placeholder: 'Select passenger',
+      ariaLabel: 'Passenger profile',
+      selectedName,
+    });
+  }, [passengers, passengerId, onSelectPropsChange]);
 
   useEffect(() => {
     if (!passengerId || !applicationMode) {
@@ -259,7 +364,6 @@ const PassengerDashboard: React.FC = () => {
     passengerApi<PassengerTrip[]>(passengerId, `/passenger/trips${suffix}`).then((rows) => {
       if (active) {
         setTrips(rows);
-        // If search returned zero results with date, find available dates
         if (travelDate && rows.length === 0) {
           const queryWithoutDate = new URLSearchParams();
           if (debouncedOrigin.trim()) queryWithoutDate.set('origin', debouncedOrigin.trim());
@@ -444,97 +548,263 @@ const PassengerDashboard: React.FC = () => {
 
   const bookingCard = (booking: PassengerBooking) => {
     return (
-      <article key={booking.bookingId} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+      <article key={booking.bookingId} className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs transition-all hover:shadow-xs">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="font-semibold text-gray-900">{routeTitle(booking)}</h3>
-            <p className="mt-1 text-sm text-gray-600">Departure {dateTime(booking.departureTime)}</p>
-            <p className="text-sm text-gray-600">Seat {booking.seatNumber} · {money(booking.amount)}</p>
+            <div className="flex items-center gap-2 text-base font-bold text-slate-900">
+              <span>{booking.origin}</span>
+              <ArrowRight size={16} className="text-blue-700 shrink-0" />
+              <span>{booking.destination}</span>
+            </div>
+            <p className="mt-0.5 text-xs font-semibold text-slate-500">Booking #{booking.bookingId} · {booking.routeCode} · Seat {booking.seatNumber}</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex items-center gap-2">
             <StatusBadge status={booking.bookingStatus} type="booking" />
             <StatusBadge status={booking.paymentStatus} type="payment" />
-            {booking.tripStatus === 'completed' && <StatusBadge status="completed" type="trip" />}
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {booking.bookingStatus === 'pending' && booking.paymentStatus !== 'paid' && <button type="button" onClick={() => { setPaymentError(''); setPaymentDialogBooking(booking); }} className="rounded bg-blue-800 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-900">Pay</button>}
-          {booking.canCancel && <button type="button" onClick={() => setCancelDialogBooking(booking)} className="rounded border border-red-300 px-3 py-2 text-sm font-semibold text-red-800 hover:bg-red-50">Cancel</button>}
+
+        <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-xs text-slate-600">
+          <div className="flex items-center gap-1.5">
+            <CalendarDays size={14} className="text-blue-700 shrink-0" />
+            <span>{dateTime(booking.departureTime)}</span>
+          </div>
+          <span className="font-bold text-slate-900 text-sm">{money(booking.amount)}</span>
+        </div>
+
+        <div className="mt-4 flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+          {booking.bookingStatus === 'pending' && ['unpaid', 'pending'].includes(booking.paymentStatus) && (
+            <button
+              type="button"
+              onClick={() => setPaymentDialogBooking(booking)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-2xs hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <CreditCard size={14} />
+              Pay now
+            </button>
+          )}
+          {booking.canCancel && (
+            <button
+              type="button"
+              onClick={() => setCancelDialogBooking(booking)}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-400"
+            >
+              Cancel booking
+            </button>
+          )}
         </div>
       </article>
     );
   };
 
-  const tabs: Array<{ id: PassengerTab; label: string }> = [
-    { id: 'find', label: 'Find a trip' }, { id: 'bookings', label: 'My bookings' },
-    { id: 'feedback', label: 'Feedback' }, { id: 'profile', label: 'Profile' },
-  ];
   const feedbackCard = (booking: PassengerBooking) => {
-    const draft = feedbackDrafts[booking.tripId] ?? { rating: '5', category: 'general', comment: '' };
     const submitted = submittedFeedbackTrips.includes(booking.tripId);
-    return <article key={booking.bookingId} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h3 className="font-semibold text-gray-900">{routeTitle(booking)}</h3><p className="mt-1 text-sm text-gray-600">{dateTime(booking.departureTime)} · Seat {booking.seatNumber}</p></div>
-        {submitted ? <span className="inline-flex items-center gap-1 text-sm font-medium text-emerald-700"><CheckCircle2 size={16} />Feedback submitted</span> : <StatusBadge status="completed" type="trip" />}
-      </div>
-      {!submitted && <form onSubmit={(event) => submitFeedback(event, booking)} noValidate className="mt-4 space-y-3">
-        <div className="flex flex-wrap items-center gap-4">
-          <fieldset><legend className="mb-1 text-sm font-medium text-gray-700">Your rating</legend><div className="flex items-center gap-1">{[1, 2, 3, 4, 5].map((value) => <button key={value} type="button" aria-label={`Rate ${value} star${value === 1 ? '' : 's'}`} aria-pressed={Number(draft.rating) === value} onClick={() => updateFeedbackDraft(booking.tripId, { rating: String(value) })} className="rounded p-1 text-amber-500 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-blue-700"><Star size={22} fill={Number(draft.rating) >= value ? 'currentColor' : 'none'} /></button>)}</div></fieldset>
-          <label className="min-w-48 flex-1 space-y-1 text-sm font-medium text-gray-700"><span>Category</span><select value={draft.category} onChange={(event) => updateFeedbackDraft(booking.tripId, { category: event.target.value })} className={inputClass} aria-label={`Feedback category for trip ${booking.tripId}`}>{feedbackCategories.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+    const draft = feedbackDrafts[booking.tripId] ?? { rating: '5', category: 'general', comment: '' };
+
+    return (
+      <article key={booking.bookingId} className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="font-bold text-slate-900">{booking.origin} to {booking.destination}</h4>
+            <p className="text-xs text-slate-500">{booking.routeCode} · Departed {dateTime(booking.departureTime)}</p>
+          </div>
+          <StatusBadge status="completed" type="trip" />
         </div>
-        <label className="block space-y-1 text-sm font-medium text-gray-700"><span>Comment</span><textarea rows={3} value={draft.comment} onChange={(event) => updateFeedbackDraft(booking.tripId, { comment: event.target.value, error: undefined })} className={inputClass} aria-label={`Feedback comment for trip ${booking.tripId}`} aria-invalid={Boolean(draft.error)} />{draft.error && <span className={fieldErrorClass}>{draft.error}</span>}</label>
-        <button type="submit" disabled={busyAction === 'feedback'} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">{busyAction === 'feedback' ? 'Submitting…' : 'Submit feedback'}</button>
-      </form>}
-    </article>;
+
+        {submitted ? (
+          <div className="flex items-center gap-2 rounded-lg bg-emerald-50 p-3 text-xs font-semibold text-emerald-800 border border-emerald-200">
+            <CheckCircle2 size={16} />
+            Feedback submitted for this trip. Thank you!
+          </div>
+        ) : (
+          <form onSubmit={(e) => submitFeedback(e, booking)} noValidate className="space-y-3 pt-2 border-t border-slate-100">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Rating</span>
+                <select
+                  value={draft.rating}
+                  onChange={(e) => updateFeedbackDraft(booking.tripId, { rating: e.target.value })}
+                  className={inputClass}
+                >
+                  <option value="5">5 ★★★★★ (Excellent)</option>
+                  <option value="4">4 ★★★★☆ (Good)</option>
+                  <option value="3">3 ★★★☆☆ (Average)</option>
+                  <option value="2">2 ★★☆☆☆ (Poor)</option>
+                  <option value="1">1 ★☆☆☆☆ (Very Bad)</option>
+                </select>
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Category</span>
+                <select
+                  value={draft.category}
+                  onChange={(e) => updateFeedbackDraft(booking.tripId, { category: e.target.value })}
+                  className={inputClass}
+                >
+                  {feedbackCategories.map((c) => (
+                    <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <label className="block space-y-1 text-xs font-semibold text-slate-700">
+              <span>Your feedback comment</span>
+              <textarea
+                rows={2}
+                value={draft.comment}
+                onChange={(e) => updateFeedbackDraft(booking.tripId, { comment: e.target.value })}
+                placeholder="Share details about your journey, bus condition, or driver..."
+                className={inputClass}
+              />
+              {draft.error && <span className={fieldErrorClass}>{draft.error}</span>}
+            </label>
+
+            <button
+              type="submit"
+              disabled={busyAction === 'feedback'}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
+            >
+              <MessageSquare size={14} />
+              {busyAction === 'feedback' ? 'Submitting…' : 'Submit feedback'}
+            </button>
+          </form>
+        )}
+      </article>
+    );
   };
 
-  const renderProfile = () => (
-    <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
-      <div className="mb-5"><h2 className="text-lg font-semibold text-gray-900">Profile details</h2><p className="mt-1 text-sm text-gray-600">Update your name and contact information.</p></div>
-      {profileLoading && !profile ? <div className="grid gap-3 sm:grid-cols-2"><div className="h-16 animate-pulse rounded bg-gray-100" /><div className="h-16 animate-pulse rounded bg-gray-100" /><div className="h-16 animate-pulse rounded bg-gray-100" /></div>
-        : !profile ? <EmptyState icon={<LockKeyhole size={20} />} message="Select a passenger to view profile details." />
-          : <form onSubmit={saveProfile} noValidate className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-1 text-sm font-medium text-gray-700"><span>First name</span><input value={profileDraft.firstName} onChange={(event) => { setProfileDraft((current) => ({ ...current, firstName: event.target.value })); setProfileErrors((current) => ({ ...current, firstName: undefined })); }} className={inputClass} aria-label="First name" aria-invalid={Boolean(profileErrors.firstName)} />{profileErrors.firstName && <span className={fieldErrorClass}>{profileErrors.firstName}</span>}</label>
-              <label className="space-y-1 text-sm font-medium text-gray-700"><span>Last name</span><input value={profileDraft.lastName} onChange={(event) => { setProfileDraft((current) => ({ ...current, lastName: event.target.value })); setProfileErrors((current) => ({ ...current, lastName: undefined })); }} className={inputClass} aria-label="Last name" aria-invalid={Boolean(profileErrors.lastName)} />{profileErrors.lastName && <span className={fieldErrorClass}>{profileErrors.lastName}</span>}</label>
-              <label className="space-y-1 text-sm font-medium text-gray-700"><span>Phone</span><input value={profileDraft.phone ?? ''} onChange={(event) => { setProfileDraft((current) => ({ ...current, phone: event.target.value })); setProfileErrors((current) => ({ ...current, phone: undefined })); }} className={inputClass} aria-label="Phone" aria-invalid={Boolean(profileErrors.phone)} />{profileErrors.phone && <span className={fieldErrorClass}>{profileErrors.phone}</span>}</label>
-              <label className="space-y-1 text-sm font-medium text-gray-700"><span>Address</span><input value={profileDraft.address ?? ''} onChange={(event) => { setProfileDraft((current) => ({ ...current, address: event.target.value })); setProfileErrors((current) => ({ ...current, address: undefined })); }} className={inputClass} aria-label="Address" aria-invalid={Boolean(profileErrors.address)} />{profileErrors.address && <span className={fieldErrorClass}>{profileErrors.address}</span>}</label>
-              <label className="space-y-1 text-sm font-medium text-gray-700"><span className="flex items-center gap-1">Email <LockKeyhole size={13} /></span><input value={profile.email} readOnly className={`${inputClass} bg-gray-50 text-gray-500`} aria-label="Email" /></label>
-              <label className="space-y-1 text-sm font-medium text-gray-700"><span className="flex items-center gap-1">NIC / Passport <LockKeyhole size={13} /></span><input value={profile.passportOrNic} readOnly className={`${inputClass} bg-gray-50 text-gray-500`} aria-label="NIC / Passport" /></label>
+  const renderProfile = () => {
+    if (profileLoading) return <div className="h-64 animate-pulse rounded-xl bg-slate-200" />;
+    if (!profile) return <EmptyState icon={<UserCheck size={24} />} message="Select a passenger profile from the top bar to view details." />;
+
+    return (
+      <section className="space-y-5 max-w-2xl">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs space-y-5">
+          <div className="flex items-center gap-4 border-b border-slate-100 pb-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-700 text-xl font-bold text-white shadow-sm">
+              {profile.firstName[0]}{profile.lastName[0]}
             </div>
-            <button type="submit" disabled={busyAction === 'profile'} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">{busyAction === 'profile' ? 'Saving…' : 'Save profile'}</button>
-          </form>}
-    </section>
-  );
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">{profile.firstName} {profile.lastName}</h3>
+              <p className="text-xs font-medium text-slate-500">Passenger ID: #{profile.passengerId}</p>
+            </div>
+          </div>
+
+          <form onSubmit={saveProfile} noValidate className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>First name</span>
+                <input
+                  value={profileDraft.firstName}
+                  onChange={(e) => { setProfileDraft(curr => ({ ...curr, firstName: e.target.value })); setProfileErrors(curr => ({ ...curr, firstName: undefined })); }}
+                  className={inputClass}
+                />
+                {profileErrors.firstName && <span className={fieldErrorClass}>{profileErrors.firstName}</span>}
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Last name</span>
+                <input
+                  value={profileDraft.lastName}
+                  onChange={(e) => { setProfileDraft(curr => ({ ...curr, lastName: e.target.value })); setProfileErrors(curr => ({ ...curr, lastName: undefined })); }}
+                  className={inputClass}
+                />
+                {profileErrors.lastName && <span className={fieldErrorClass}>{profileErrors.lastName}</span>}
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Phone number</span>
+                <input
+                  value={profileDraft.phone ?? ''}
+                  onChange={(e) => { setProfileDraft(curr => ({ ...curr, phone: e.target.value })); setProfileErrors(curr => ({ ...curr, phone: undefined })); }}
+                  className={inputClass}
+                />
+                {profileErrors.phone && <span className={fieldErrorClass}>{profileErrors.phone}</span>}
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Address</span>
+                <input
+                  value={profileDraft.address ?? ''}
+                  onChange={(e) => { setProfileDraft(curr => ({ ...curr, address: e.target.value })); setProfileErrors(curr => ({ ...curr, address: undefined })); }}
+                  className={inputClass}
+                />
+                {profileErrors.address && <span className={fieldErrorClass}>{profileErrors.address}</span>}
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span className="flex items-center gap-1">Email <LockKeyhole size={12} className="text-slate-400" /></span>
+                <input value={profile.email} readOnly className={`${inputClass} bg-slate-50 text-slate-500 cursor-not-allowed`} />
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span className="flex items-center gap-1">NIC / Passport <LockKeyhole size={12} className="text-slate-400" /></span>
+                <input value={profile.passportOrNic} readOnly className={`${inputClass} bg-slate-50 text-slate-500 cursor-not-allowed`} />
+              </label>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="submit"
+                disabled={busyAction === 'profile'}
+                className="rounded-lg bg-blue-700 px-5 py-2.5 text-xs font-semibold text-white shadow-2xs hover:bg-blue-800 disabled:opacity-60"
+              >
+                {busyAction === 'profile' ? 'Saving profile…' : 'Save profile'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+    );
+  };
+
+  const tabsConfig: Array<{ id: PassengerTab; label: string; icon: React.ReactNode }> = [
+    { id: 'find', label: 'Find a trip', icon: <Search size={16} /> },
+    { id: 'bookings', label: 'My bookings', icon: <Ticket size={16} /> },
+    { id: 'feedback', label: 'Feedback', icon: <MessageSquare size={16} /> },
+    { id: 'profile', label: 'Profile', icon: <UserCheck size={16} /> },
+  ];
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      {/* ── Top greeting banner (only show in-page select if NOT in shared layout) ── */}
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between border-b border-slate-200 pb-5">
         <div>
-          <p className="text-sm font-medium text-blue-800">SmartMove passenger portal</p>
-          <h1 className="mt-1 text-2xl font-bold text-gray-900">{profile ? `Welcome, ${profile.firstName}` : 'Passenger Dashboard'}</h1>
-          <p className="mt-1 text-sm text-gray-600">{profile ? 'Your journeys, bookings, and profile in one place.' : 'Welcome to SmartMove. Your journeys and bookings start here.'}</p>
+          <span className="inline-flex items-center gap-1.5 rounded-md bg-blue-50 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-blue-700">
+            <Sparkles size={13} /> Passenger Portal
+          </span>
+          <h1 className="mt-2 text-2xl font-bold text-slate-900">
+            {profile ? `Welcome, ${profile.firstName}` : 'Passenger Dashboard'}
+          </h1>
+          <p className="mt-1 text-xs text-slate-600">
+            {profile ? 'Manage your upcoming journeys, active tickets, and feedback.' : 'Select a passenger profile to start searching and booking trips.'}
+          </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-gray-500" role="status">{applicationMode === 'oracle' ? 'Oracle records' : applicationMode === 'demo' ? 'Demo records' : 'Connecting'}</span>
-          {applicationMode === 'demo' ? (
+
+        {!inSharedLayout && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500" role="status">
+              {applicationMode === 'oracle' ? 'Oracle mode' : applicationMode === 'demo' ? 'Demo mode' : 'Connecting'}
+            </span>
             <SearchableSelect
               value={passengerId}
               onChange={selectPassenger}
-              options={passengers.map((passenger) => ({
-                value: String(passenger.id),
-                label: `${passenger.firstName} ${passenger.lastName}`,
-                secondaryLabel: `#${passenger.id} · ${passenger.email}`,
-                initials: `${passenger.firstName[0]}${passenger.lastName[0]}`,
+              options={passengers.map((p) => ({
+                value: String(p.id),
+                label: `${p.firstName} ${p.lastName}`,
+                secondaryLabel: `#${p.id} · ${p.email}`,
+                initials: `${p.firstName[0]}${p.lastName[0]}`,
               }))}
               placeholder="Select passenger"
               className="w-64"
               ariaLabel="Passenger profile"
             />
-          ) : <input id="acting-passenger-id" type="number" min="1" step="1" value={passengerId} onChange={(event) => selectPassenger(event.target.value)} className={`${inputClass} w-44`} aria-label="Acting passenger ID" placeholder="Passenger ID" />}
-        </div>
+          </div>
+        )}
       </header>
 
+      {/* ── Summary Stats Grid ── */}
       <section aria-label="Passenger summary" className="grid gap-3 grid-cols-2 xl:grid-cols-4">
         <SummaryCard icon={<CalendarDays size={18} />} label="Upcoming trips" value={upcomingCount} />
         <SummaryCard icon={<CreditCard size={18} />} label="Pending payments" value={pendingPaymentCount} />
@@ -542,136 +812,411 @@ const PassengerDashboard: React.FC = () => {
         <SummaryCard icon={<Ticket size={18} />} label="Total bookings" value={bookings.length} />
       </section>
 
-      {bootstrapLoading && <div className="h-12 animate-pulse rounded-lg bg-gray-200" aria-label="Loading passenger dashboard" />}
-      {pageError && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{pageError}</div>}
-      {toast && <div role={toast.kind === 'error' ? 'alert' : 'status'} className={`flex items-start justify-between gap-3 rounded-lg border p-3 text-sm ${toast.kind === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}><span>{toast.text}</span><button type="button" aria-label="Dismiss message" onClick={() => setToast(null)} className="rounded p-1 hover:bg-black/5"><X size={16} /></button></div>}
-      {paymentConfirmation && <div role="status" className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-emerald-900"><CheckCircle2 className="mt-0.5 shrink-0" size={20} /><div><p className="font-semibold">Payment confirmed</p><p className="text-sm">Booking #{paymentConfirmation.bookingId} is confirmed.</p></div></div>}
+      {bootstrapLoading && <div className="h-12 animate-pulse rounded-xl bg-slate-200" aria-label="Loading passenger dashboard" />}
+      {pageError && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs font-semibold text-rose-800">{pageError}</div>}
+      {toast && (
+        <div role={toast.kind === 'error' ? 'alert' : 'status'} className={`flex items-center justify-between gap-3 rounded-xl border p-4 text-xs font-semibold ${toast.kind === 'error' ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>
+          <span>{toast.text}</span>
+          <button type="button" aria-label="Dismiss message" onClick={() => setToast(null)} className="rounded-md p-1 hover:bg-black/5"><X size={15} /></button>
+        </div>
+      )}
+      {paymentConfirmation && (
+        <div role="status" className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs font-semibold text-emerald-900">
+          <CheckCircle2 className="mt-0.5 shrink-0" size={18} />
+          <div>
+            <p className="font-bold">Payment confirmed!</p>
+            <p className="text-slate-600 font-normal">Booking #{paymentConfirmation.bookingId} has been confirmed.</p>
+          </div>
+        </div>
+      )}
 
-      <div className="overflow-x-auto border-b border-gray-200" role="tablist" aria-label="Passenger dashboard sections">
-        <div className="flex min-w-max gap-1">{tabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`passenger-panel-${tab.id}`} onClick={() => setActiveTab(tab.id)} className={`border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${activeTab === tab.id ? 'border-blue-800 text-blue-900' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>{tab.label}</button>)}</div>
+      {/* ── Navigation Tabs ── */}
+      <div className="overflow-x-auto border-b border-slate-200" role="tablist" aria-label="Passenger dashboard sections">
+        <div className="flex min-w-max gap-2 pb-1">
+          {tabsConfig.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls={`passenger-panel-${tab.id}`}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-lg transition-all ${
+                activeTab === tab.id
+                  ? 'bg-blue-700 text-white shadow-2xs'
+                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
+      {/* ── Tab Panels ── */}
       <div id={`passenger-panel-${activeTab}`} role="tabpanel" className="min-h-64">
-        {activeTab === 'find' && <section className="space-y-4">
-          <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold text-gray-900">Find a trip</h2><p className="text-sm text-gray-600">Filter upcoming services by route and date.</p></div><button type="button" onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }} className="rounded border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Clear filters</button></div>
-          <div className="grid gap-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-3">
-            <label className="space-y-1 text-sm font-medium text-gray-700"><span>Origin</span><SearchableDropdown value={origin} onChange={setOrigin} options={Array.from(new Set(routes.map((route) => route.origin))).map(origin => ({ value: origin, label: origin }))} placeholder="All origins" ariaLabel="Origin" /></label>
-            <label className="space-y-1 text-sm font-medium text-gray-700"><span>Destination</span><SearchableDropdown value={destination} onChange={setDestination} options={Array.from(new Set(routes.map((route) => route.destination))).map(destination => ({ value: destination, label: destination }))} placeholder="All destinations" ariaLabel="Destination" /></label>
-            <label className="space-y-1 text-sm font-medium text-gray-700"><span>Date</span><input type="date" value={travelDate} onChange={(event) => setTravelDate(event.target.value)} className={inputClass} aria-label="Trip date" /></label>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => setHasSearched(true)} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Search</button>
-          </div>
-          {tripsLoading ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Loading trips">{[0, 1, 2].map((item) => <div key={item} className="h-44 animate-pulse rounded-lg bg-gray-100" />)}</div>
-            : !passengerId ? <EmptyState icon={<MapPin size={20} />} message="Select a passenger to search for upcoming trips." />
-              : !hasSearched ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{trips.map((trip) => {
-                  const capacity = Math.max(1, Number(trip.totalSeats));
-                  const seatRatio = Math.max(0, Math.min(100, Number(trip.availableSeats) / capacity * 100));
-                  const lowSeats = Number(trip.availableSeats) <= 3;
-                  const duration = tripDuration(trip.departureTime, trip.arrivalTime);
-                  return <article key={trip.tripId} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
-                    <div className="flex items-center gap-2 text-lg font-semibold text-gray-900"><span>{trip.origin}</span><ArrowRight size={18} className="shrink-0 text-blue-800" /><span>{trip.destination}</span></div>
-                    <p className="mt-1 text-xs font-medium text-gray-500">{trip.routeCode}</p>
-                    <div className="mt-4 flex items-start gap-2 text-sm text-gray-700"><CalendarDays size={16} className="mt-0.5 shrink-0 text-blue-800" /><span>{dateTime(trip.departureTime)}{duration ? ` · ${duration}` : ''}</span></div>
-                    <div className="mt-4 flex items-center justify-between text-sm"><span className="text-gray-600">Seats left</span><span className={`font-semibold ${lowSeats ? 'text-red-700' : 'text-gray-900'}`}>{trip.availableSeats} / {trip.totalSeats}</span></div>
-                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-100"><div className={`h-full rounded-full ${lowSeats ? 'bg-red-600' : 'bg-blue-800'}`} style={{ width: `${seatRatio}%` }} /></div>
-                    <div className="mt-4 flex items-center justify-between gap-3"><span className="text-lg font-bold text-gray-900">{money(trip.fareAmount)}</span><button type="button" onClick={() => openBooking(trip)} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Book</button></div>
-                  </article>;
-                })}</div>
-              : trips.length === 0 ? <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-gray-300 bg-white p-8 text-center">
-                  <MapPin size={32} className="text-gray-400" />
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">{travelDate ? `No trips on ${new Date(travelDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : 'No trips match your search'}</p>
-                    {travelDate && availableDates.length > 0 ? (
-                      <div className="mt-2">
-                        <p className="text-sm text-gray-600">Trips available on:</p>
-                        <div className="mt-2 flex flex-wrap justify-center gap-2">
-                          {availableDates.slice(0, 5).map((date) => (
+        {activeTab === 'find' && (
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Find a trip</h2>
+                <p className="text-xs text-slate-500">Filter upcoming scheduled bus services by origin, destination, or date.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Clear filters
+              </button>
+            </div>
+
+            {/* Filter Bar */}
+            <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-2xs sm:grid-cols-2 lg:grid-cols-3">
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Origin</span>
+                <SearchableDropdown
+                  value={origin}
+                  onChange={setOrigin}
+                  options={Array.from(new Set(routes.map((r) => r.origin))).map(o => ({ value: o, label: o }))}
+                  placeholder="All origins"
+                  ariaLabel="Origin"
+                />
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Destination</span>
+                <SearchableDropdown
+                  value={destination}
+                  onChange={setDestination}
+                  options={Array.from(new Set(routes.map((r) => r.destination))).map(d => ({ value: d, label: d }))}
+                  placeholder="All destinations"
+                  ariaLabel="Destination"
+                />
+              </label>
+
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                <span>Trip Date</span>
+                <input
+                  type="date"
+                  value={travelDate}
+                  onChange={(e) => setTravelDate(e.target.value)}
+                  className={inputClass}
+                  aria-label="Trip date"
+                />
+              </label>
+            </div>
+
+            <div className="flex items-center justify-start">
+              <button
+                type="button"
+                onClick={() => setHasSearched(true)}
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-bold text-white shadow-2xs hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <Search size={14} />
+                Search trips
+              </button>
+            </div>
+
+            {tripsLoading ? (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" aria-label="Loading trips">
+                {[0, 1, 2].map((i) => <SkeletonCard key={i} />)}
+              </div>
+            ) : !passengerId ? (
+              <EmptyState icon={<UserCheck size={24} />} title="Select a Passenger" message="Select a passenger profile from the top bar to view available trips." />
+            ) : trips.length === 0 ? (
+              <EmptyState
+                icon={<MapPin size={24} />}
+                title="No Trips Found"
+                message={travelDate ? `No scheduled services found for ${new Date(travelDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}.` : 'No upcoming trips match your current filters.'}
+                action={
+                  <div className="space-y-3">
+                    {travelDate && availableDates.length > 0 && (
+                      <div>
+                        <p className="text-xs text-slate-500 mb-1.5 font-medium">Trips available on alternate dates:</p>
+                        <div className="flex flex-wrap justify-center gap-1.5">
+                          {availableDates.slice(0, 5).map((d) => (
                             <button
-                              key={date}
+                              key={d}
                               type="button"
-                              onClick={() => { setTravelDate(date); setHasSearched(true); }}
-                              className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-800 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                              onClick={() => { setTravelDate(d); setHasSearched(true); }}
+                              className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
                             >
-                              {new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                              {new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                             </button>
                           ))}
                         </div>
                       </div>
-                    ) : (
-                      <p className="mt-1 text-sm text-gray-600">Try a different date or clear filters to see all available trips.</p>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }}
+                      className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Clear all filters
+                    </button>
                   </div>
-                  <button type="button" onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }} className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Clear filters</button>
-                </div>
-                : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{trips.map((trip) => {
+                }
+              />
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {trips.map((trip) => {
                   const capacity = Math.max(1, Number(trip.totalSeats));
-                  const seatRatio = Math.max(0, Math.min(100, Number(trip.availableSeats) / capacity * 100));
+                  const seatRatio = Math.max(0, Math.min(100, (Number(trip.availableSeats) / capacity) * 100));
                   const lowSeats = Number(trip.availableSeats) <= 3;
                   const isFull = Number(trip.availableSeats) === 0;
                   const duration = tripDuration(trip.departureTime, trip.arrivalTime);
-                  return <article key={trip.tripId} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
-                    <div className="flex items-center gap-2 text-lg font-semibold text-gray-900"><span>{trip.origin}</span><ArrowRight size={18} className="shrink-0 text-blue-800" /><span>{trip.destination}</span></div>
-                    <p className="mt-1 text-xs font-medium text-gray-500">{trip.routeCode}</p>
-                    <div className="mt-4 flex items-start gap-2 text-sm text-gray-700"><CalendarDays size={16} className="mt-0.5 shrink-0 text-blue-800" /><span>{dateTime(trip.departureTime)}{duration ? ` · ${duration}` : ''}</span></div>
-                    <div className="mt-4 flex items-center justify-between text-sm"><span className="text-gray-600">Seats left</span><span className={`font-semibold ${isFull ? 'text-red-700' : lowSeats ? 'text-red-700' : 'text-emerald-700'}`}>{isFull ? 'Fully booked' : lowSeats ? `${trip.availableSeats} seats left` : 'Plenty of seats'}</span></div>
-                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-100"><div className={`h-full rounded-full ${isFull ? 'bg-red-600' : lowSeats ? 'bg-red-600' : 'bg-emerald-600'}`} style={{ width: `${seatRatio}%` }} /></div>
-                    <div className="mt-4 flex items-center justify-between gap-3"><span className="text-lg font-bold text-gray-900">{money(trip.fareAmount)}</span><button type="button" onClick={() => openBooking(trip)} disabled={isFull} className={`rounded px-4 py-2 text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${isFull ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-blue-800 text-white hover:bg-blue-900'}`}>{isFull ? 'Fully booked' : 'Book'}</button></div>
-                  </article>;
-                })}</div>}
-        </section>}
 
-        {activeTab === 'bookings' && <section className="space-y-5">
-          <div><h2 className="text-lg font-semibold text-gray-900">My bookings</h2><p className="text-sm text-gray-600">Review travel and payment status.</p></div>
-          {bookingsLoading ? <div className="grid gap-3 md:grid-cols-2" aria-label="Loading bookings">{[0, 1].map((item) => <div key={item} className="h-36 animate-pulse rounded-lg bg-gray-100" />)}</div>
-            : !passengerId ? <EmptyState icon={<Ticket size={20} />} message="Select a passenger to view bookings." />
-              : bookings.length === 0 ? <EmptyState icon={<Ticket size={20} />} message="You do not have any bookings yet." />
-                : <div className="space-y-6">
-                  <section className="space-y-3"><h3 className="font-semibold text-gray-800">Upcoming</h3>{upcomingBookings.length ? <div className="grid gap-3 md:grid-cols-2">{upcomingBookings.map(bookingCard)}</div> : <EmptyState icon={<CalendarDays size={20} />} message="No upcoming trips." />}</section>
-                  <section className="space-y-3"><h3 className="font-semibold text-gray-800">Past</h3>{pastBookings.length ? <div className="grid gap-3 md:grid-cols-2">{pastBookings.map(bookingCard)}</div> : <EmptyState icon={<CheckCircle2 size={20} />} message="No past trips." />}</section>
-                </div>}
-        </section>}
+                  return (
+                    <article key={trip.tripId} className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 shadow-2xs transition-all duration-200 hover:shadow-xs">
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-700">{trip.routeCode}</span>
+                          <span className={`text-xs font-bold ${isFull ? 'text-rose-600' : lowSeats ? 'text-amber-600' : 'text-emerald-600'}`}>
+                            {isFull ? 'Fully booked' : lowSeats ? `Only ${trip.availableSeats} seats left` : `${trip.availableSeats} seats available`}
+                          </span>
+                        </div>
 
-        {activeTab === 'feedback' && <section className="space-y-5">
-          <div><h2 className="text-lg font-semibold text-gray-900">Trip feedback</h2><p className="text-sm text-gray-600">Rate a completed trip you booked.</p></div>
-          {bookingsLoading ? <div className="h-36 animate-pulse rounded-lg bg-gray-100" aria-label="Loading feedback trips" />
-            : !passengerId ? <EmptyState icon={<Star size={20} />} message="Select a passenger to view completed trips." />
-              : completedBookings.length ? <div className="grid gap-3 xl:grid-cols-2">{completedBookings.map(feedbackCard)}</div>
-                : <EmptyState icon={<Star size={20} />} message="No completed booked trips are ready for feedback." />}
-          <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-            <div className="flex items-center justify-between gap-2"><h3 className="font-semibold text-gray-900">Travel announcements and reviews</h3><span className="text-xs text-gray-500">{contentSource === 'mongodb' ? 'Live MongoDB' : contentSource === 'demo' ? 'Demo fallback' : 'Unavailable'}</span></div>
-            {announcements.length ? announcements.map((item, index) => <p key={`${item.title}-${index}`} className="mt-2 text-sm text-gray-700"><strong>{item.title}:</strong> {item.detail}</p>) : <p className="mt-2 text-sm text-gray-600">No current announcements.</p>}
-            <p className="mt-3 text-xs text-gray-600">{reviewCount} review(s) returned by the content endpoint.</p>
+                        <div className="flex items-center gap-2 text-lg font-bold text-slate-900">
+                          <span>{trip.origin}</span>
+                          <ArrowRight size={18} className="text-blue-700 shrink-0" />
+                          <span>{trip.destination}</span>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-xs text-slate-600">
+                          <CalendarDays size={14} className="text-blue-700 shrink-0" />
+                          <span>{dateTime(trip.departureTime)}{duration ? ` · (${duration})` : ''}</span>
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ${isFull ? 'bg-rose-500' : lowSeats ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                              style={{ width: `${seatRatio}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-4">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Fare</span>
+                          <span className="text-base font-bold text-slate-900">{money(trip.fareAmount)}</span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => openBooking(trip)}
+                          disabled={isFull}
+                          className={`rounded-lg px-4 py-2 text-xs font-bold transition-all shadow-2xs focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                            isFull
+                              ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                              : 'bg-blue-700 text-white hover:bg-blue-800'
+                          }`}
+                        >
+                          {isFull ? 'Fully Booked' : 'Book Seat'}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
           </section>
-        </section>}
+        )}
+
+        {activeTab === 'bookings' && (
+          <section className="space-y-5">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">My bookings</h2>
+              <p className="text-xs text-slate-500">View upcoming reservations, travel history, and complete pending payments.</p>
+            </div>
+
+            {bookingsLoading ? (
+              <div className="grid gap-4 md:grid-cols-2" aria-label="Loading bookings">
+                {[0, 1].map((i) => <SkeletonCard key={i} />)}
+              </div>
+            ) : !passengerId ? (
+              <EmptyState icon={<Ticket size={24} />} title="No Passenger Selected" message="Select a passenger profile from the top bar to view your bookings." />
+            ) : bookings.length === 0 ? (
+              <EmptyState icon={<Ticket size={24} />} title="No Bookings Found" message="You do not have any travel bookings registered yet." />
+            ) : (
+              <div className="space-y-6">
+                <section className="space-y-3">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">Upcoming Journeys ({upcomingBookings.length})</h3>
+                  {upcomingBookings.length ? (
+                    <div className="grid gap-4 md:grid-cols-2">{upcomingBookings.map(bookingCard)}</div>
+                  ) : (
+                    <EmptyState icon={<CalendarDays size={20} />} message="No upcoming trips scheduled." />
+                  )}
+                </section>
+
+                <section className="space-y-3">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">Past Journeys ({pastBookings.length})</h3>
+                  {pastBookings.length ? (
+                    <div className="grid gap-4 md:grid-cols-2">{pastBookings.map(bookingCard)}</div>
+                  ) : (
+                    <EmptyState icon={<CheckCircle2 size={20} />} message="No past trips recorded." />
+                  )}
+                </section>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === 'feedback' && (
+          <section className="space-y-5">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Trip feedback & ratings</h2>
+              <p className="text-xs text-slate-500">Rate completed journeys and share feedback with transit managers.</p>
+            </div>
+
+            {bookingsLoading ? (
+              <div className="h-36 animate-pulse rounded-xl bg-slate-200" aria-label="Loading feedback trips" />
+            ) : !passengerId ? (
+              <EmptyState icon={<Star size={24} />} message="Select a passenger profile from the top bar to view completed trips." />
+            ) : completedBookings.length ? (
+              <div className="grid gap-4 xl:grid-cols-2">{completedBookings.map(feedbackCard)}</div>
+            ) : (
+              <EmptyState icon={<Star size={24} />} title="No Completed Trips" message="Completed trips will appear here so you can leave feedback." />
+            )}
+
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">System Announcements & Reviews</h3>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                  {contentSource === 'mongodb' ? 'Live MongoDB' : contentSource === 'demo' ? 'Demo mode' : 'Unavailable'}
+                </span>
+              </div>
+              {announcements.length ? (
+                announcements.map((item, index) => (
+                  <div key={`${item.title}-${index}`} className="text-xs text-slate-700 space-y-0.5">
+                    <strong className="font-bold text-slate-900">{item.title}: </strong>
+                    <span>{item.detail}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-xs text-slate-500">No active system announcements.</p>
+              )}
+              {reviewCount > 0 && (
+                <p className="mt-2 text-[11px] text-slate-500">{reviewCount} review(s) returned by content service.</p>
+              )}
+            </section>
+          </section>
+        )}
 
         {activeTab === 'profile' && renderProfile()}
       </div>
 
-      <Modal isOpen={Boolean(bookingDialogTrip)} onClose={() => { if (busyAction !== 'booking') setBookingDialogTrip(null); }} title="Book trip" size="md">
-        {bookingDialogTrip && <FocusTrap><form onSubmit={bookTrip} noValidate className="space-y-4">
-          <div><h3 className="font-semibold text-gray-900">{bookingDialogTrip.origin} <ArrowRight className="inline" size={15} /> {bookingDialogTrip.destination}</h3><p className="mt-1 text-sm text-gray-600">{dateTime(bookingDialogTrip.departureTime)} · {bookingDialogTrip.availableSeats} seats left</p></div>
-          <label className="block space-y-1 text-sm font-medium text-gray-700"><span>Seat number</span><input type="number" min="1" max={bookingDialogTrip.totalSeats} step="1" value={seatNumber} onChange={(event) => { setSeatNumber(event.target.value); setSeatError(''); }} className={inputClass} aria-label="Seat number" aria-invalid={Boolean(seatError)} />{seatError && <span className={fieldErrorClass}>{seatError}</span>}<span className="text-xs text-gray-500">Choose a seat from 1 to {bookingDialogTrip.totalSeats}. Availability is verified when booking.</span></label>
-          <label className="block space-y-1 text-sm font-medium text-gray-700"><span>Fare</span><input value={money(bookingDialogTrip.fareAmount)} readOnly className={`${inputClass} bg-gray-50 text-gray-600`} aria-label="Fare" /></label>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setBookingDialogTrip(null)} disabled={busyAction === 'booking'} className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Close</button><button type="submit" disabled={busyAction === 'booking'} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">{busyAction === 'booking' ? 'Booking…' : 'Confirm booking'}</button></div>
-        </form></FocusTrap>}
+      {/* ── Dialog Modals ── */}
+      <Modal isOpen={Boolean(bookingDialogTrip)} onClose={() => { if (busyAction !== 'booking') setBookingDialogTrip(null); }} title="Book trip seat" size="md">
+        {bookingDialogTrip && (
+          <FocusTrap>
+            <form onSubmit={bookTrip} noValidate className="space-y-4">
+              <div className="rounded-lg bg-blue-50 p-4 border border-blue-100">
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  {bookingDialogTrip.origin} <ArrowRight size={16} className="text-blue-700" /> {bookingDialogTrip.destination}
+                </h3>
+                <p className="mt-1 text-xs text-slate-600">
+                  {dateTime(bookingDialogTrip.departureTime)} · Route {bookingDialogTrip.routeCode}
+                </p>
+              </div>
+
+              <label className="block space-y-1 text-xs font-semibold text-slate-700">
+                <span>Seat number</span>
+                <input
+                  type="number"
+                  min="1"
+                  max={bookingDialogTrip.totalSeats}
+                  step="1"
+                  value={seatNumber}
+                  onChange={(e) => { setSeatNumber(e.target.value); setSeatError(''); }}
+                  className={inputClass}
+                  aria-label="Seat number"
+                  aria-invalid={Boolean(seatError)}
+                />
+                {seatError && <span className={fieldErrorClass}>{seatError}</span>}
+                <span className="text-[11px] font-normal text-slate-500">Enter a seat number between 1 and {bookingDialogTrip.totalSeats}.</span>
+              </label>
+
+              <label className="block space-y-1 text-xs font-semibold text-slate-700">
+                <span>Fare amount</span>
+                <input value={money(bookingDialogTrip.fareAmount)} readOnly className={`${inputClass} bg-slate-50 text-slate-600 font-bold`} aria-label="Fare" />
+              </label>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setBookingDialogTrip(null)} disabled={busyAction === 'booking'} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                  Cancel
+                </button>
+                <button type="submit" disabled={busyAction === 'booking'} className="rounded-lg bg-blue-700 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
+                  {busyAction === 'booking' ? 'Booking…' : 'Confirm Booking'}
+                </button>
+              </div>
+            </form>
+          </FocusTrap>
+        )}
       </Modal>
 
-      <Modal isOpen={Boolean(paymentDialogBooking)} onClose={() => { if (busyAction !== 'payment') setPaymentDialogBooking(null); }} title="Pay for booking" size="md">
-        {paymentDialogBooking && <FocusTrap><form onSubmit={payBooking} noValidate className="space-y-4">
-          <p className="text-sm text-gray-700">{routeTitle(paymentDialogBooking)}</p>
-          <label className="block space-y-1 text-sm font-medium text-gray-700"><span>Amount</span><input value={money(paymentDialogBooking.amount)} readOnly className={`${inputClass} bg-gray-50 text-gray-600`} aria-label="Payment amount" /></label>
-          <label className="block space-y-1 text-sm font-medium text-gray-700"><span>Payment method</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className={inputClass} aria-label="Payment method">{paymentMethods.map((method) => <option key={method} value={method}>{method.replaceAll('_', ' ')}</option>)}</select>{paymentError && <span className={fieldErrorClass}>{paymentError}</span>}</label>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setPaymentDialogBooking(null)} disabled={busyAction === 'payment'} className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Close</button><button type="submit" disabled={busyAction === 'payment'} className="inline-flex items-center gap-2 rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:cursor-wait disabled:opacity-60">{busyAction === 'payment' ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />Paying…</> : 'Confirm payment'}</button></div>
-        </form></FocusTrap>}
+      <Modal isOpen={Boolean(paymentDialogBooking)} onClose={() => { if (busyAction !== 'payment') setPaymentDialogBooking(null); }} title="Complete payment" size="md">
+        {paymentDialogBooking && (
+          <FocusTrap>
+            <form onSubmit={payBooking} noValidate className="space-y-4">
+              <div className="rounded-lg bg-slate-50 p-4 border border-slate-200">
+                <p className="text-xs font-bold text-slate-900">{routeTitle(paymentDialogBooking)}</p>
+                <p className="text-xs text-slate-500 mt-1">Booking #{paymentDialogBooking.bookingId} · Seat {paymentDialogBooking.seatNumber}</p>
+              </div>
+
+              <label className="block space-y-1 text-xs font-semibold text-slate-700">
+                <span>Amount to pay</span>
+                <input value={money(paymentDialogBooking.amount)} readOnly className={`${inputClass} bg-slate-50 text-slate-900 font-bold text-base`} aria-label="Payment amount" />
+              </label>
+
+              <label className="block space-y-1 text-xs font-semibold text-slate-700">
+                <span>Payment method</span>
+                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className={inputClass} aria-label="Payment method">
+                  {paymentMethods.map((m) => (
+                    <option key={m} value={m}>{m.replaceAll('_', ' ').toUpperCase()}</option>
+                  ))}
+                </select>
+                {paymentError && <span className={fieldErrorClass}>{paymentError}</span>}
+              </label>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setPaymentDialogBooking(null)} disabled={busyAction === 'payment'} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                  Cancel
+                </button>
+                <button type="submit" disabled={busyAction === 'payment'} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60">
+                  {busyAction === 'payment' ? 'Processing…' : 'Confirm Payment'}
+                </button>
+              </div>
+            </form>
+          </FocusTrap>
+        )}
       </Modal>
 
       <Modal isOpen={Boolean(cancelDialogBooking)} onClose={() => { if (busyAction !== 'cancel') setCancelDialogBooking(null); }} title="Cancel booking" size="sm">
-        {cancelDialogBooking && <FocusTrap><div className="space-y-4">
-          <p className="text-sm text-gray-700">You can cancel only more than two hours before departure. Any paid booking will be refunded.</p>
-          <p className="text-sm font-medium text-gray-900">{routeTitle(cancelDialogBooking)} · {dateTime(cancelDialogBooking.departureTime)}</p>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setCancelDialogBooking(null)} disabled={busyAction === 'cancel'} className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Keep booking</button><button type="button" onClick={cancelBooking} disabled={busyAction === 'cancel'} className="rounded bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:cursor-wait disabled:opacity-60">{busyAction === 'cancel' ? 'Cancelling…' : 'Confirm cancellation'}</button></div>
-        </div></FocusTrap>}
+        {cancelDialogBooking && (
+          <FocusTrap>
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 rounded-lg bg-rose-50 p-3 text-rose-800 border border-rose-200">
+                <AlertTriangle size={20} className="shrink-0 text-rose-600" />
+                <p className="text-xs font-medium">Cancellations must be made at least 2 hours prior to departure. Any paid fare will be refunded automatically.</p>
+              </div>
+
+              <p className="text-xs font-bold text-slate-900">{routeTitle(cancelDialogBooking)} · {dateTime(cancelDialogBooking.departureTime)}</p>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setCancelDialogBooking(null)} disabled={busyAction === 'cancel'} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                  Keep booking
+                </button>
+                <button type="button" onClick={cancelBooking} disabled={busyAction === 'cancel'} className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60">
+                  {busyAction === 'cancel' ? 'Cancelling…' : 'Confirm cancellation'}
+                </button>
+              </div>
+            </div>
+          </FocusTrap>
+        )}
       </Modal>
     </div>
   );

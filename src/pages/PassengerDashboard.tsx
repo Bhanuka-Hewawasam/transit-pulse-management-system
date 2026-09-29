@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, CalendarDays, CheckCircle2, CreditCard, LockKeyhole, MapPin, Ticket, X, Star } from 'lucide-react';
 import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
+import SearchableSelect from '../components/SearchableSelect';
+import SearchableDropdown from '../components/SearchableDropdown';
+import { useDebounce } from '../hooks/useDebounce';
 import { ApiError, API_BASE_URL, apiGet } from '../services/api';
 import type { Passenger } from '../types';
 
@@ -16,6 +19,13 @@ type PassengerTrip = {
   availableSeats: number;
   totalSeats: number;
   fareAmount: number;
+};
+
+type Route = {
+  id: number;
+  routeCode: string;
+  origin: string;
+  destination: string;
 };
 
 type PassengerBooking = {
@@ -147,9 +157,14 @@ const PassengerDashboard: React.FC = () => {
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>({ firstName: '', lastName: '', phone: '', address: '' });
   const [bookings, setBookings] = useState<PassengerBooking[]>([]);
   const [trips, setTrips] = useState<PassengerTrip[]>([]);
+  const [routes, setRoutes] = useState<Route[]>([]);
   const [origin, setOrigin] = useState('');
   const [destination, setDestination] = useState('');
   const [travelDate, setTravelDate] = useState('');
+  const [hasSearched, setHasSearched] = useState(false);
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const debouncedOrigin = useDebounce(origin, 300);
+  const debouncedDestination = useDebounce(destination, 300);
   const [activeTab, setActiveTab] = useState<PassengerTab>('find');
   const [tripRefresh, setTripRefresh] = useState(0);
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
@@ -229,27 +244,63 @@ const PassengerDashboard: React.FC = () => {
   useEffect(() => {
     if (!passengerId || !applicationMode) {
       setTrips([]);
+      setAvailableDates([]);
       return;
     }
     let active = true;
     setTripsLoading(true);
     const query = new URLSearchParams();
-    if (origin.trim()) query.set('origin', origin.trim());
-    if (destination.trim()) query.set('destination', destination.trim());
-    if (travelDate) query.set('date', travelDate);
+    if (hasSearched || debouncedOrigin || debouncedDestination) {
+      if (debouncedOrigin.trim()) query.set('origin', debouncedOrigin.trim());
+      if (debouncedDestination.trim()) query.set('destination', debouncedDestination.trim());
+      if (travelDate) query.set('date', travelDate);
+    }
     const suffix = query.size ? `?${query.toString()}` : '';
     passengerApi<PassengerTrip[]>(passengerId, `/passenger/trips${suffix}`).then((rows) => {
-      if (active) setTrips(rows);
+      if (active) {
+        setTrips(rows);
+        // If search returned zero results with date, find available dates
+        if (travelDate && rows.length === 0) {
+          const queryWithoutDate = new URLSearchParams();
+          if (debouncedOrigin.trim()) queryWithoutDate.set('origin', debouncedOrigin.trim());
+          if (debouncedDestination.trim()) queryWithoutDate.set('destination', debouncedDestination.trim());
+          const suffixWithoutDate = queryWithoutDate.size ? `?${queryWithoutDate.toString()}` : '';
+          passengerApi<PassengerTrip[]>(passengerId, `/passenger/trips${suffixWithoutDate}`).then((allTrips) => {
+            if (active) {
+              const dates = [...new Set(allTrips.map(trip => trip.departureTime.slice(0, 10)))].sort();
+              setAvailableDates(dates);
+            }
+          }).catch(() => {
+            if (active) setAvailableDates([]);
+          });
+        } else {
+          setAvailableDates([]);
+        }
+      }
     }).catch((error: Error) => {
-      if (active) { setTrips([]); setToast({ kind: 'error', text: error.message }); }
+      if (active) { setTrips([]); setAvailableDates([]); setToast({ kind: 'error', text: error.message }); }
     }).finally(() => { if (active) setTripsLoading(false); });
     return () => { active = false; };
-  }, [passengerId, applicationMode, origin, destination, travelDate, tripRefresh]);
+  }, [passengerId, applicationMode, debouncedOrigin, debouncedDestination, travelDate, tripRefresh, hasSearched]);
 
   useEffect(() => {
     if (!profile) return;
     setProfileDraft({ firstName: profile.firstName, lastName: profile.lastName, phone: profile.phone ?? '', address: profile.address ?? '' });
   }, [profile]);
+
+  useEffect(() => {
+    if (!applicationMode) {
+      setRoutes([]);
+      return;
+    }
+    let active = true;
+    apiGet<Route[]>('/routes').then((routesData) => {
+      if (active) setRoutes(routesData);
+    }).catch(() => {
+      if (active) setRoutes([]);
+    });
+    return () => { active = false; };
+  }, [applicationMode]);
 
   const upcomingBookings = useMemo(() => bookings.filter((booking) => new Date(booking.departureTime).getTime() > Date.now()), [bookings]);
   const pastBookings = useMemo(() => bookings.filter((booking) => new Date(booking.departureTime).getTime() <= Date.now()), [bookings]);
@@ -265,11 +316,12 @@ const PassengerDashboard: React.FC = () => {
     refreshTrips();
   };
 
-  const selectPassenger = (value: string) => {
-    setPassengerId(value);
+  const selectPassenger = (value: string | number) => {
+    setPassengerId(String(value));
     setProfile(null);
     setBookings([]);
     setTrips([]);
+    setHasSearched(false);
     setToast(null);
     setPageError(null);
     setSubmittedFeedbackTrips([]);
@@ -466,10 +518,19 @@ const PassengerDashboard: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-gray-500" role="status">{applicationMode === 'oracle' ? 'Oracle records' : applicationMode === 'demo' ? 'Demo records' : 'Connecting'}</span>
           {applicationMode === 'demo' ? (
-            <label className="sr-only" htmlFor="passenger-profile-select">Passenger profile</label>
-          ) : <label className="sr-only" htmlFor="acting-passenger-id">Acting passenger ID</label>}
-          {applicationMode === 'demo' ? (
-            <select id="passenger-profile-select" value={passengerId} onChange={(event) => selectPassenger(event.target.value)} className={`${inputClass} w-64`} aria-label="Passenger profile"><option value="">Select passenger</option>{passengers.map((passenger) => <option key={passenger.id} value={passenger.id}>{passenger.firstName} {passenger.lastName} · #{passenger.id}</option>)}</select>
+            <SearchableSelect
+              value={passengerId}
+              onChange={selectPassenger}
+              options={passengers.map((passenger) => ({
+                value: String(passenger.id),
+                label: `${passenger.firstName} ${passenger.lastName}`,
+                secondaryLabel: `#${passenger.id} · ${passenger.email}`,
+                initials: `${passenger.firstName[0]}${passenger.lastName[0]}`,
+              }))}
+              placeholder="Select passenger"
+              className="w-64"
+              ariaLabel="Passenger profile"
+            />
           ) : <input id="acting-passenger-id" type="number" min="1" step="1" value={passengerId} onChange={(event) => selectPassenger(event.target.value)} className={`${inputClass} w-44`} aria-label="Acting passenger ID" placeholder="Passenger ID" />}
         </div>
       </header>
@@ -492,16 +553,18 @@ const PassengerDashboard: React.FC = () => {
 
       <div id={`passenger-panel-${activeTab}`} role="tabpanel" className="min-h-64">
         {activeTab === 'find' && <section className="space-y-4">
-          <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold text-gray-900">Find a trip</h2><p className="text-sm text-gray-600">Filter upcoming services by route and date.</p></div><button type="button" onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); }} className="rounded border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Clear filters</button></div>
+          <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-lg font-semibold text-gray-900">Find a trip</h2><p className="text-sm text-gray-600">Filter upcoming services by route and date.</p></div><button type="button" onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }} className="rounded border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Clear filters</button></div>
           <div className="grid gap-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-3">
-            <label className="space-y-1 text-sm font-medium text-gray-700"><span>Origin</span><input value={origin} onChange={(event) => setOrigin(event.target.value)} className={inputClass} aria-label="Origin" /></label>
-            <label className="space-y-1 text-sm font-medium text-gray-700"><span>Destination</span><input value={destination} onChange={(event) => setDestination(event.target.value)} className={inputClass} aria-label="Destination" /></label>
+            <label className="space-y-1 text-sm font-medium text-gray-700"><span>Origin</span><SearchableDropdown value={origin} onChange={setOrigin} options={Array.from(new Set(routes.map((route) => route.origin))).map(origin => ({ value: origin, label: origin }))} placeholder="All origins" ariaLabel="Origin" /></label>
+            <label className="space-y-1 text-sm font-medium text-gray-700"><span>Destination</span><SearchableDropdown value={destination} onChange={setDestination} options={Array.from(new Set(routes.map((route) => route.destination))).map(destination => ({ value: destination, label: destination }))} placeholder="All destinations" ariaLabel="Destination" /></label>
             <label className="space-y-1 text-sm font-medium text-gray-700"><span>Date</span><input type="date" value={travelDate} onChange={(event) => setTravelDate(event.target.value)} className={inputClass} aria-label="Trip date" /></label>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setHasSearched(true)} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Search</button>
           </div>
           {tripsLoading ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Loading trips">{[0, 1, 2].map((item) => <div key={item} className="h-44 animate-pulse rounded-lg bg-gray-100" />)}</div>
             : !passengerId ? <EmptyState icon={<MapPin size={20} />} message="Select a passenger to search for upcoming trips." />
-              : trips.length === 0 ? <EmptyState icon={<MapPin size={20} />} message="No upcoming trips match your search." />
-                : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{trips.map((trip) => {
+              : !hasSearched ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{trips.map((trip) => {
                   const capacity = Math.max(1, Number(trip.totalSeats));
                   const seatRatio = Math.max(0, Math.min(100, Number(trip.availableSeats) / capacity * 100));
                   const lowSeats = Number(trip.availableSeats) <= 3;
@@ -513,6 +576,47 @@ const PassengerDashboard: React.FC = () => {
                     <div className="mt-4 flex items-center justify-between text-sm"><span className="text-gray-600">Seats left</span><span className={`font-semibold ${lowSeats ? 'text-red-700' : 'text-gray-900'}`}>{trip.availableSeats} / {trip.totalSeats}</span></div>
                     <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-100"><div className={`h-full rounded-full ${lowSeats ? 'bg-red-600' : 'bg-blue-800'}`} style={{ width: `${seatRatio}%` }} /></div>
                     <div className="mt-4 flex items-center justify-between gap-3"><span className="text-lg font-bold text-gray-900">{money(trip.fareAmount)}</span><button type="button" onClick={() => openBooking(trip)} className="rounded bg-blue-800 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Book</button></div>
+                  </article>;
+                })}</div>
+              : trips.length === 0 ? <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-gray-300 bg-white p-8 text-center">
+                  <MapPin size={32} className="text-gray-400" />
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{travelDate ? `No trips on ${new Date(travelDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : 'No trips match your search'}</p>
+                    {travelDate && availableDates.length > 0 ? (
+                      <div className="mt-2">
+                        <p className="text-sm text-gray-600">Trips available on:</p>
+                        <div className="mt-2 flex flex-wrap justify-center gap-2">
+                          {availableDates.slice(0, 5).map((date) => (
+                            <button
+                              key={date}
+                              type="button"
+                              onClick={() => { setTravelDate(date); setHasSearched(true); }}
+                              className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-800 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                            >
+                              {new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-sm text-gray-600">Try a different date or clear filters to see all available trips.</p>
+                    )}
+                  </div>
+                  <button type="button" onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }} className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Clear filters</button>
+                </div>
+                : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{trips.map((trip) => {
+                  const capacity = Math.max(1, Number(trip.totalSeats));
+                  const seatRatio = Math.max(0, Math.min(100, Number(trip.availableSeats) / capacity * 100));
+                  const lowSeats = Number(trip.availableSeats) <= 3;
+                  const isFull = Number(trip.availableSeats) === 0;
+                  const duration = tripDuration(trip.departureTime, trip.arrivalTime);
+                  return <article key={trip.tripId} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
+                    <div className="flex items-center gap-2 text-lg font-semibold text-gray-900"><span>{trip.origin}</span><ArrowRight size={18} className="shrink-0 text-blue-800" /><span>{trip.destination}</span></div>
+                    <p className="mt-1 text-xs font-medium text-gray-500">{trip.routeCode}</p>
+                    <div className="mt-4 flex items-start gap-2 text-sm text-gray-700"><CalendarDays size={16} className="mt-0.5 shrink-0 text-blue-800" /><span>{dateTime(trip.departureTime)}{duration ? ` · ${duration}` : ''}</span></div>
+                    <div className="mt-4 flex items-center justify-between text-sm"><span className="text-gray-600">Seats left</span><span className={`font-semibold ${isFull ? 'text-red-700' : lowSeats ? 'text-red-700' : 'text-emerald-700'}`}>{isFull ? 'Fully booked' : lowSeats ? `${trip.availableSeats} seats left` : 'Plenty of seats'}</span></div>
+                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-100"><div className={`h-full rounded-full ${isFull ? 'bg-red-600' : lowSeats ? 'bg-red-600' : 'bg-emerald-600'}`} style={{ width: `${seatRatio}%` }} /></div>
+                    <div className="mt-4 flex items-center justify-between gap-3"><span className="text-lg font-bold text-gray-900">{money(trip.fareAmount)}</span><button type="button" onClick={() => openBooking(trip)} disabled={isFull} className={`rounded px-4 py-2 text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${isFull ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-blue-800 text-white hover:bg-blue-900'}`}>{isFull ? 'Fully booked' : 'Book'}</button></div>
                   </article>;
                 })}</div>}
         </section>}

@@ -60,7 +60,9 @@ describe('Driver dashboard', () => {
   it('keeps the demo driver picker and displays the passenger manifest', async () => {
     mockMode = 'demo';
     render(<DriverDashboard />);
-    fireEvent.change(await screen.findByLabelText('Driver profile'), { target: { value: '3' } });
+    const driverInput = await screen.findByLabelText('Driver profile');
+    fireEvent.change(driverInput, { target: { value: 'Sunil' } });
+    fireEvent.click(screen.getByText('Sunil Fernando'));
     expect(await screen.findByRole('heading', { name: 'Welcome, Sunil' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'View passengers' }));

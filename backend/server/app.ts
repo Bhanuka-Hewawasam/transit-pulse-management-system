@@ -3,7 +3,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { database, nextId } from './database.js';
 import { calculateSegmentFare, calculateTotalFare } from '../../src/utils/routeFare.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, PaymentMethod, Route, Trip, Vehicle } from '../../src/types/index.js';
-import { mongodbContent, mongodbHealth, mongodbPassengerReviews } from './mongodbAdapter.js';
+import { mongodbContent, mongodbCreateAnnouncement, mongodbHealth, mongodbPassengerReviews, type TravelAnnouncementInput } from './mongodbAdapter.js';
 import {
   oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookSeats, oraclePassengerBookings, oraclePassengerCancelBooking,
   oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerPayBookings, oraclePassengerProfile, oraclePassengerSearchTrips,
@@ -37,10 +37,11 @@ app.get('/api/bookings', list('bookings'));
 app.get('/api/payments', list('payments'));
 app.get('/api/maintenance', list('maintenance'));
 app.get('/api/feedback', list('feedback'));
+const demoAnnouncements: Record<string, unknown>[] = [{ id: 'announcement-1', type: 'announcement', title: 'Holiday timetable', message: 'Extra Colombo to Kandy trips are available during the holiday period.', audience: 'all', status: 'published', priority: 'normal', startDate: '2026-01-01', active: true, createdAt: '2026-01-01T00:00:00.000Z' }];
 const demoMongoContent = () => ({
   demo: true,
   reviews: database.feedback,
-  announcements: [{ id: 'announcement-1', title: 'Holiday timetable', detail: 'Extra Colombo to Kandy trips are available during the holiday period.', meta: 'Active announcement' }],
+  announcements: demoAnnouncements,
   documents: database.vehicles.slice(0, 3).map((vehicle) => ({ id: `document-${vehicle.id}`, title: `${vehicle.registrationNumber} · Insurance document`, detail: `${vehicle.make} ${vehicle.model} document record`, meta: `Expires ${vehicle.nextMaintenanceDate}` })),
   media: database.trips.slice(0, 3).map((trip) => ({ id: `media-${trip.id}`, title: `${trip.routeCode} trip media`, detail: `Photo/video reference for ${trip.origin} to ${trip.destination}`, meta: `${trip.vehicleReg ?? 'Vehicle'} · Demo media` })),
 });
@@ -53,7 +54,7 @@ app.get('/api/health/databases', async (_request, response) => response.json({
 }));
 app.get('/api/mongodb/content', async (_request, response) => {
   const health = await mongodbHealth();
-  if (health.connected) return response.json({ demo: false, ...(await mongodbContent()) });
+  if (health.connected) return response.json({ demo: false, ...(await mongodbContent(_request.query.includeInactive === 'true')) });
   if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent());
   return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
 });
@@ -72,6 +73,43 @@ app.get('/api/mongodb/announcements', async (_request, response) => {
   if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).announcements);
   if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent().announcements);
   return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+});
+app.post('/api/mongodb/announcements', async (request, response) => {
+  const { title, message, audience, startDate, endDate, priority, status, routeId, tripId } = (request.body ?? {}) as Record<string, unknown>;
+  const priorities = ['low', 'normal', 'high', 'urgent'];
+  const statuses = ['draft', 'published', 'scheduled', 'expired'];
+  const audiences = ['all', 'passengers', 'drivers'];
+  if (typeof title !== 'string' || !title.trim()) return response.status(400).json({ error: 'title is required' });
+  if (typeof message !== 'string' || !message.trim()) return response.status(400).json({ error: 'message is required' });
+  if (typeof audience !== 'string' || !audiences.includes(audience)) return response.status(400).json({ error: 'audience must be all, passengers, or drivers' });
+  if (typeof startDate !== 'string' || !startDate || Number.isNaN(Date.parse(startDate))) return response.status(400).json({ error: 'startDate must be a valid date' });
+  if (endDate !== undefined && endDate !== '' && (typeof endDate !== 'string' || Number.isNaN(Date.parse(endDate)))) return response.status(400).json({ error: 'endDate must be a valid date' });
+  if (endDate && Date.parse(endDate as string) < Date.parse(startDate)) return response.status(400).json({ error: 'endDate must be on or after startDate' });
+  if (typeof priority !== 'string' || !priorities.includes(priority)) return response.status(400).json({ error: 'priority must be low, normal, high, or urgent' });
+  if (typeof status !== 'string' || !statuses.includes(status)) return response.status(400).json({ error: 'status must be draft, published, scheduled, or expired' });
+
+  const input: TravelAnnouncementInput = {
+    title: title.trim(), message: message.trim(), audience: audience as TravelAnnouncementInput['audience'], startDate,
+    ...(typeof endDate === 'string' && endDate ? { endDate } : {}),
+    priority: priority as TravelAnnouncementInput['priority'],
+    status: status as TravelAnnouncementInput['status'],
+    ...(typeof routeId === 'string' && routeId ? { routeId } : {}),
+    ...(typeof tripId === 'string' && tripId ? { tripId } : {}),
+  };
+  try {
+    const health = await mongodbHealth();
+    if (health.connected) return response.status(201).json(await mongodbCreateAnnouncement(input));
+    if (process.env.DATABASE_MODE === 'demo') {
+      const timestamp = new Date().toISOString();
+      const announcement = { ...input, id: `announcement-${Date.now()}`, type: 'announcement', active: input.status === 'published', createdAt: timestamp, updatedAt: timestamp };
+      demoAnnouncements.push(announcement);
+      return response.status(201).json(announcement);
+    }
+    return response.status(503).json({ error: 'MongoDB is unavailable; announcements cannot be saved.' });
+  } catch (error) {
+    console.error('MongoDB announcement could not be saved:', error);
+    return response.status(500).json({ error: 'Announcement could not be saved. Check MongoDB and try again.' });
+  }
 });
 app.get('/api/mongodb/documents', async (_request, response) => {
   if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).documents);

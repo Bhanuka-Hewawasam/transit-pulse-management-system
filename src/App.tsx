@@ -116,7 +116,7 @@ function App() {
       return <ManagementPage key={activePage} page={activePage} searchValue={headerSearch} onSearchValueChange={setHeaderSearch} />;
     }
     if (activePage === 'reports') return <Reports />;
-    if (activePage === 'mongodb') return <MongoDBContent searchValue={headerSearch} onSearchValueChange={setHeaderSearch} />;
+    if (activePage === 'mongodb') return <MongoDBContent role={role} searchValue={headerSearch} onSearchValueChange={setHeaderSearch} />;
     if (activePage === 'documentation') return <Documentation />;
     return <UnavailablePage page={activePage} />;
   };

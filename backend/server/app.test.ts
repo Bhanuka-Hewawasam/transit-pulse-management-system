@@ -35,6 +35,7 @@ const mongoMocks = vi.hoisted(() => ({
   health: vi.fn(),
   content: vi.fn(),
   reviews: vi.fn(),
+  createAnnouncement: vi.fn(),
 }));
 
 vi.mock('./oracleAdapter.js', () => ({
@@ -70,6 +71,7 @@ vi.mock('./oracleAdapter.js', () => ({
 vi.mock('./mongodbAdapter.js', () => ({
   mongodbHealth: mongoMocks.health,
   mongodbContent: mongoMocks.content,
+  mongodbCreateAnnouncement: mongoMocks.createAnnouncement,
   mongodbPassengerReviews: mongoMocks.reviews,
 }));
 
@@ -172,6 +174,41 @@ describe('SmartMove backend API', () => {
     expect(response.status).toBe(200);
     expect(response.body.demo).toBe(true);
     expect(response.body.reviews.length).toBeGreaterThan(0);
+  });
+
+  it('creates a travel announcement through the MongoDB adapter', async () => {
+    const payload = {
+      title: 'Route update', message: 'Expect delays this afternoon.', audience: 'drivers', startDate: '2026-09-30', endDate: '2026-10-01',
+      priority: 'high', status: 'published', routeId: 'R12', tripId: 'T45',
+    };
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    mongoMocks.createAnnouncement.mockResolvedValue({ ...payload, id: 'announcement-2', active: true, createdAt: '2026-09-29T00:00:00.000Z' });
+
+    const response = await request(app).post('/api/mongodb/announcements').send(payload);
+
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({ ...payload, id: 'announcement-2', active: true });
+    expect(mongoMocks.createAnnouncement).toHaveBeenCalledWith(payload);
+  });
+
+  it('rejects announcements with invalid fields before writing', async () => {
+    const response = await request(app).post('/api/mongodb/announcements').send({
+      title: 'Route update', message: 'A message', audience: 'all', startDate: '2026-09-30', endDate: '2026-09-29', priority: 'urgent', status: 'published',
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('endDate must be on or after startDate');
+    expect(mongoMocks.createAnnouncement).not.toHaveBeenCalled();
+  });
+
+  it('rejects announcements with an unsupported audience', async () => {
+    const response = await request(app).post('/api/mongodb/announcements').send({
+      title: 'Route update', message: 'A message', audience: 'staff', startDate: '2026-09-30', priority: 'normal', status: 'draft',
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('audience must be all, passengers, or drivers');
+    expect(mongoMocks.createAnnouncement).not.toHaveBeenCalled();
   });
 
   it('reads vehicles from Oracle and does not use demo data after Oracle errors', async () => {

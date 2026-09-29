@@ -1,6 +1,18 @@
 import { MongoClient, type Db } from 'mongodb';
 
 export type MongoHealth = { database: 'MongoDB'; connected: boolean; mode: 'mongodb' | 'demo'; message: string };
+export type AnnouncementAudience = 'all' | 'passengers' | 'drivers';
+export type TravelAnnouncementInput = {
+  title: string;
+  message: string;
+  audience: AnnouncementAudience;
+  startDate: string;
+  endDate?: string;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  status: 'draft' | 'published' | 'scheduled' | 'expired';
+  routeId?: string;
+  tripId?: string;
+};
 let client: MongoClient | undefined;
 let db: Db | undefined;
 
@@ -27,20 +39,47 @@ export async function mongodbHealth(): Promise<MongoHealth> {
   }
 }
 
-export async function mongodbContent(): Promise<{ reviews: unknown[]; announcements: unknown[]; documents: unknown[]; media: unknown[] }> {
+export async function mongodbContent(includeInactiveAnnouncements = false): Promise<{ reviews: unknown[]; announcements: unknown[]; documents: unknown[]; media: unknown[] }> {
   const database = await getDb();
   const [reviews, announcements, documents, media] = await Promise.all([
-    database.collection('passenger_reviews').find({}).toArray(),
-    database.collection('travel_announcements').find({ active: true }).toArray(),
+    readWithLegacy(database, 'passenger_feedback', 'passenger_reviews'),
+    readWithLegacy(database, 'announcements', 'travel_announcements', includeInactiveAnnouncements ? {} : { active: true }),
     database.collection('vehicle_documents').find({}).toArray(),
     database.collection('trip_media').find({}).toArray(),
   ]);
   return { reviews, announcements, documents, media };
 }
 
+async function readWithLegacy(database: Db, collectionName: string, legacyName: string, filter: Record<string, unknown> = {}): Promise<Record<string, unknown>[]> {
+  const [current, legacy] = await Promise.all([
+    database.collection(collectionName).find(filter).toArray(),
+    database.collection(legacyName).find(filter).toArray(),
+  ]);
+  const records = new Map<string, Record<string, unknown>>();
+  for (const record of [...legacy, ...current]) {
+    const id = record._id?.toString();
+    records.set(id ?? `${legacyName}-${records.size}`, record as Record<string, unknown>);
+  }
+  return [...records.values()];
+}
+
+export async function mongodbCreateAnnouncement(input: TravelAnnouncementInput): Promise<Record<string, unknown>> {
+  const database = await getDb();
+  const timestamp = new Date().toISOString();
+  const announcement = {
+    type: 'announcement',
+    ...input,
+    active: input.status === 'published',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const result = await database.collection('announcements').insertOne(announcement);
+  return { ...announcement, id: result.insertedId.toString() };
+}
+
 export async function mongodbPassengerReviews(): Promise<Record<string, unknown>[]> {
   const database = await getDb();
-  return database.collection('passenger_reviews').find({}).toArray();
+  return readWithLegacy(database, 'passenger_feedback', 'passenger_reviews');
 }
 
 export async function closeMongo(): Promise<void> {

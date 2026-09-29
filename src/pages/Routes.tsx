@@ -9,10 +9,10 @@ import { Plus, MapPin, X, Pencil, ArrowRight, Inbox } from 'lucide-react';
 import type { Route } from '../types';
 import { ApiError, apiGet, apiPatch, apiPost } from '../services/api';
 
-import StatusBadge   from '../components/StatusBadge';
-import SearchBar     from '../components/SearchBar';
-import DataTable     from '../components/DataTable';
-import Modal         from '../components/Modal';
+import StatusBadge from '../components/StatusBadge';
+import SearchBar from '../components/SearchBar';
+import DataTable from '../components/DataTable';
+import Modal from '../components/Modal';
 import type { Column } from '../components/DataTable';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -21,25 +21,25 @@ type ActiveFilter = 'all' | 'active' | 'inactive';
 
 /** Shape of the Add / Edit form fields */
 interface RouteFormData {
-  routeCode:         string;
-  origin:            string;
-  destination:       string;
-  stops:             string[];
-  distanceKm:        string;
-  estimatedMinutes:  string;
-  fareAmount:        string;
-  isActive:          boolean;
+  routeCode: string;
+  origin: string;
+  destination: string;
+  stops: string[];
+  distanceKm: string;
+  estimatedMinutes: string;
+  fareAmount: string;
+  isActive: boolean;
 }
 
 const EMPTY_FORM: RouteFormData = {
-  routeCode:        '',
-  origin:           '',
-  destination:      '',
-  stops:            [],
-  distanceKm:       '',
+  routeCode: '',
+  origin: '',
+  destination: '',
+  stops: [],
+  distanceKm: '',
   estimatedMinutes: '',
-  fareAmount:       '',
-  isActive:         true,
+  fareAmount: '',
+  isActive: true,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -50,14 +50,14 @@ const formatFare = (amount: number) =>
 
 /** Parse RouteFormData into the backend request shape. */
 const parseForm = (f: RouteFormData) => ({
-  routeCode:        f.routeCode.trim(),
-  origin:           f.origin.trim(),
-  destination:      f.destination.trim(),
-  stops:            f.stops.map((stop) => stop.trim()).filter(Boolean),
-  distanceKm:       Number(f.distanceKm),
+  routeCode: f.routeCode.trim(),
+  origin: f.origin.trim(),
+  destination: f.destination.trim(),
+  stops: f.stops.map((stop) => stop.trim()).filter(Boolean),
+  distanceKm: Number(f.distanceKm),
   estimatedMinutes: Number(f.estimatedMinutes),
-  fareAmount:       Number(f.fareAmount),
-  isActive:         f.isActive,
+  fareAmount: Number(f.fareAmount),
+  isActive: f.isActive,
 });
 
 // ─── Stop-count Badge with Tooltip ────────────────────────────────────────────
@@ -115,17 +115,17 @@ const StopsBadge: React.FC<{ stops: string[] }> = ({ stops }) => {
 
 const Routes: React.FC<{ searchValue?: string; onSearchValueChange?: (value: string) => void }> = ({ searchValue, onSearchValueChange }) => {
   // ── State ──────────────────────────────────────────────────────────────────
-  const [localRoutes,   setLocalRoutes]   = useState<Route[]>([]);
-  const [loading,       setLoading]       = useState(true);
-  const [error,         setError]         = useState<Error | null>(null);
-  const [success,       setSuccess]       = useState('');
+  const [localRoutes, setLocalRoutes] = useState<Route[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [success, setSuccess] = useState('');
   const [localSearchTerm, setLocalSearchTerm] = useState('');
-  const [activeFilter,  setActiveFilter]  = useState<ActiveFilter>('all');
-  const [showAddModal,  setShowAddModal]  = useState(false);
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>('all');
+  const [showAddModal, setShowAddModal] = useState(false);
   const [editingRoute, setEditingRoute] = useState<Route | null>(null);
   const [saving, setSaving] = useState(false);
-  const [formData,      setFormData]      = useState<RouteFormData>(EMPTY_FORM);
-  const [formErrors,    setFormErrors]    = useState<Partial<RouteFormData>>({});
+  const [formData, setFormData] = useState<RouteFormData>(EMPTY_FORM);
+  const [formErrors, setFormErrors] = useState<Partial<RouteFormData>>({});
   const searchTerm = searchValue ?? localSearchTerm;
   const setSearchTerm = onSearchValueChange ?? setLocalSearchTerm;
 
@@ -134,7 +134,7 @@ const Routes: React.FC<{ searchValue?: string; onSearchValueChange?: (value: str
   }, []);
 
   // ── Derived data ──────────────────────────────────────────────────────────
-  const activeCount   = useMemo(() => localRoutes.filter((r) => r.isActive).length, [localRoutes]);
+  const activeCount = useMemo(() => localRoutes.filter((r) => r.isActive).length, [localRoutes]);
   const inactiveCount = useMemo(() => localRoutes.filter((r) => !r.isActive).length, [localRoutes]);
 
   const filteredRoutes = useMemo(() => {
@@ -148,9 +148,9 @@ const Routes: React.FC<{ searchValue?: string; onSearchValueChange?: (value: str
         r.stops.some((s) => s.toLowerCase().includes(q));
 
       const matchesFilter =
-        activeFilter === 'all'      ? true :
-        activeFilter === 'active'   ? r.isActive :
-        /* inactive */               !r.isActive;
+        activeFilter === 'all' ? true :
+          activeFilter === 'active' ? r.isActive :
+        /* inactive */ !r.isActive;
 
       return matchesSearch && matchesFilter;
     });
@@ -201,18 +201,18 @@ const Routes: React.FC<{ searchValue?: string; onSearchValueChange?: (value: str
   /** Basic validation — returns true if the form is valid */
   const validate = (): boolean => {
     const errors: Partial<RouteFormData> = {};
-    if (!formData.routeCode.trim())        errors.routeCode        = 'Required';
-    if (!formData.origin.trim())           errors.origin           = 'Required';
-    if (!formData.destination.trim())      errors.destination      = 'Required';
+    if (!formData.routeCode.trim()) errors.routeCode = 'Required';
+    if (!formData.origin.trim()) errors.origin = 'Required';
+    if (!formData.destination.trim()) errors.destination = 'Required';
     if (!formData.distanceKm ||
       !Number.isFinite(Number(formData.distanceKm)) || Number(formData.distanceKm) <= 0)
-                                           errors.distanceKm       = 'Enter a valid number';
+      errors.distanceKm = 'Enter a valid number';
     if (!formData.estimatedMinutes ||
       !Number.isInteger(Number(formData.estimatedMinutes)) || Number(formData.estimatedMinutes) < 1)
-                                           errors.estimatedMinutes = 'Enter a valid integer';
+      errors.estimatedMinutes = 'Enter a valid integer';
     if (!formData.fareAmount ||
       !Number.isFinite(Number(formData.fareAmount)) || Number(formData.fareAmount) <= 0)
-                                           errors.fareAmount       = 'Enter a valid amount';
+      errors.fareAmount = 'Enter a valid amount';
 
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
@@ -241,39 +241,39 @@ const Routes: React.FC<{ searchValue?: string; onSearchValueChange?: (value: str
   // ── Table columns ─────────────────────────────────────────────────────────
   const columns: Column<Route>[] = [
     {
-      key:    'routeCode',
-      label:  'Route Code',
+      key: 'routeCode',
+      label: 'Route Code',
       render: (r) => (
-            <span className="font-mono font-bold text-blue-800">{r.routeCode}</span>
+        <span className="font-mono font-bold text-blue-800">{r.routeCode}</span>
       ),
     },
-    { key: 'origin',      label: 'Origin' },
+    { key: 'origin', label: 'Origin' },
     { key: 'destination', label: 'Destination' },
     {
-      key:    'stops',
-      label:  'Stops',
+      key: 'stops',
+      label: 'Stops',
       render: (r) => <StopsBadge stops={r.stops} />,
     },
     {
-      key:    'distanceKm',
-      label:  'Distance',
+      key: 'distanceKm',
+      label: 'Distance',
       render: (r) => `${r.distanceKm} km`,
     },
     {
-      key:    'estimatedMinutes',
-      label:  'Duration',
+      key: 'estimatedMinutes',
+      label: 'Duration',
       render: (r) => `${r.estimatedMinutes} mins`,
     },
     {
-      key:    'fareAmount',
-      label:  'Fare',
+      key: 'fareAmount',
+      label: 'Fare',
       render: (r) => (
         <span className="font-semibold text-green-700">{formatFare(r.fareAmount)}</span>
       ),
     },
     {
-      key:    'isActive',
-      label:  'Status',
+      key: 'isActive',
+      label: 'Status',
       render: (r) => <StatusBadge status={r.isActive ? 'active' : 'inactive'} />,
     },
     {
@@ -330,9 +330,9 @@ const Routes: React.FC<{ searchValue?: string; onSearchValueChange?: (value: str
         <div className="flex rounded-lg overflow-hidden border border-gray-200 shrink-0">
           {(['all', 'active', 'inactive'] as ActiveFilter[]).map((f) => {
             const count =
-              f === 'all'      ? localRoutes.length :
-              f === 'active'   ? activeCount        :
-                                 inactiveCount;
+              f === 'all' ? localRoutes.length :
+                f === 'active' ? activeCount :
+                  inactiveCount;
             return (
               <button
                 key={f}

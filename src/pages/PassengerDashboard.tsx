@@ -6,8 +6,14 @@ import {
   CalendarDays,
   CheckCircle2,
   CreditCard,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
   LockKeyhole,
   MapPin,
+  Minus,
+  Plus,
   Ticket,
   X,
   Star,
@@ -54,6 +60,9 @@ type PassengerTrip = {
   availableSeats: number;
   totalSeats: number;
   fareAmount: number;
+  status?: string;
+  vehicleRegistration?: string;
+  driverName?: string;
 };
 
 type Route = {
@@ -61,6 +70,9 @@ type Route = {
   routeCode: string;
   origin: string;
   destination: string;
+  stops?: string[];
+  distanceKm?: number;
+  estimatedMinutes?: number;
 };
 
 type PassengerBooking = {
@@ -96,6 +108,8 @@ type ProfileDraft = Pick<PassengerProfile, 'firstName' | 'lastName' | 'phone' | 
 type Toast = { kind: 'success' | 'error'; text: string };
 type ContentItem = { title: string; detail: string };
 type FeedbackDraft = { rating: string; category: string; comment: string; error?: string };
+type BookingStep = 1 | 2 | 3 | 4 | 5 | 6;
+type BookingCheckout = { bookingIds: number[]; seatNumbers: string[]; amount: number };
 
 const paymentMethods = ['card', 'cash', 'online', 'bank_transfer'];
 const feedbackCategories = ['service', 'driver', 'vehicle', 'punctuality', 'general'];
@@ -273,6 +287,13 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   const [seatError, setSeatError] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('card');
   const [paymentError, setPaymentError] = useState('');
+  const [bookingStep, setBookingStep] = useState<BookingStep>(1);
+  const [pickupPoint, setPickupPoint] = useState('');
+  const [dropoffPoint, setDropoffPoint] = useState('');
+  const [showJourneyDetails, setShowJourneyDetails] = useState(false);
+  const [bookingFlowError, setBookingFlowError] = useState('');
+  const [bookingCheckout, setBookingCheckout] = useState<BookingCheckout | null>(null);
+  const [bookingCompleted, setBookingCompleted] = useState(false);
   const [profileErrors, setProfileErrors] = useState<Partial<Record<keyof ProfileDraft, string>>>({});
   const [feedbackDrafts, setFeedbackDrafts] = useState<Record<number, FeedbackDraft>>({});
   const [submittedFeedbackTrips, setSubmittedFeedbackTrips] = useState<number[]>([]);
@@ -460,6 +481,10 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
     setSelectedRouteId(null);
     setSelectedTripId(null);
     setTripsError(null);
+    setBookingDialogTrip(null);
+    setBookingStep(1);
+    setBookingCheckout(null);
+    setBookingCompleted(false);
     setToast(null);
     setPageError(null);
     setSubmittedFeedbackTrips([]);
@@ -472,6 +497,10 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
     setBookingDialogTrip(null);
     setSeatCount(1);
     setSeatError('');
+    setBookingStep(1);
+    setBookingCheckout(null);
+    setBookingCompleted(false);
+    setBookingFlowError('');
     setTrips([]);
     setTripsError(null);
   };
@@ -502,44 +531,99 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
       setToast({ kind: 'error', text: 'Select an origin, destination, travel date, route, and trip before booking.' });
       return;
     }
+    setPickupPoint(trip.origin);
+    setDropoffPoint(trip.destination);
+    setBookingStep(1);
+    setShowJourneyDetails(false);
+    setBookingFlowError('');
+    setBookingCheckout(null);
+    setBookingCompleted(false);
     setSeatCount(1);
     setSeatError('');
     setBookingDialogTrip(trip);
   };
 
-  const bookTrip = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const advanceBookingStep = () => {
+    setBookingFlowError('');
+    if (bookingStep === 2) {
+      if (!isValidDateOnly(travelDate) || dateKey(bookingDialogTrip?.departureTime ?? '') < travelDate) {
+        setBookingFlowError('Choose a valid date on or before the selected departure.');
+        return;
+      }
+      if (!pickupPoint || !dropoffPoint || pickupPoint === dropoffPoint) {
+        setBookingFlowError('Choose different pickup and drop-off points.');
+        return;
+      }
+    }
+    if (bookingStep === 3 && !profile) {
+      setBookingFlowError('Passenger information is unavailable. Select a passenger profile and try again.');
+      return;
+    }
+    if (bookingStep === 4 && (!Number.isInteger(selectedSeatCount) || selectedSeatCount < 1
+      || selectedSeatCount > (bookingDialogTrip?.availableSeats ?? 0))) {
+      setBookingFlowError(`Choose between 1 and ${bookingDialogTrip?.availableSeats ?? 0} available seats.`);
+      return;
+    }
+    if (bookingStep < 6) setBookingStep((step) => (step + 1) as BookingStep);
+  };
+
+  const updateBookingDate = (value: string) => {
     if (!bookingDialogTrip) return;
-    if (!origin.trim() || !destination.trim() || !isValidDateOnly(travelDate)
-      || selectedRouteId !== bookingDialogTrip.routeId || selectedTripId !== bookingDialogTrip.tripId
-      || bookingDialogTrip.origin.trim().toLowerCase() !== origin.trim().toLowerCase()
-      || bookingDialogTrip.destination.trim().toLowerCase() !== destination.trim().toLowerCase()
-      || dateKey(bookingDialogTrip.departureTime) < travelDate
-      || !selectedRouteTrips.some((trip) => trip.tripId === bookingDialogTrip.tripId)) {
+    setTravelDate(value);
+    setBookingCheckout(null);
+    setBookingCompleted(false);
+    setBookingFlowError('');
+    if (!isValidDateOnly(value) || dateKey(bookingDialogTrip.departureTime) < value) {
+      setSelectedRouteId(null);
+      setSelectedTripId(null);
       setBookingDialogTrip(null);
-      setToast({ kind: 'error', text: 'Select an origin, destination, travel date, route, and trip before booking.' });
+      setBookingStep(1);
+      setTrips([]);
       return;
     }
-    if (!Number.isInteger(selectedSeatCount) || selectedSeatCount < 1) {
-      setSeatError('Select at least one seat.');
-      return;
-    }
-    if (selectedSeatCount > bookingDialogTrip.availableSeats) {
-      setSeatError(`Only ${bookingDialogTrip.availableSeats} seats are available for this trip.`);
-      return;
-    }
-    setSeatError('');
+  };
+
+  const confirmJourneyBooking = async () => {
+    if (!bookingDialogTrip || !profile || !isValidDateOnly(travelDate)) return;
+    setBookingFlowError('');
     setBusyAction('booking');
     try {
-      await passengerApi<{ bookingIds: number[]; amount: number }>(passengerId, '/passenger/bookings', { method: 'POST', body: JSON.stringify({ tripId: bookingDialogTrip.tripId, seatCount: selectedSeatCount, amount: totalAmount }) });
-      setToast({ kind: 'success', text: `${selectedSeatCount} seat${selectedSeatCount === 1 ? '' : 's'} booked. Complete payment to confirm.` });
-      setBookingDialogTrip(null);
-      await refreshPassengerData();
+      let checkout = bookingCheckout;
+      if (!checkout) {
+        const result = await passengerApi<{
+          bookingId?: number;
+          bookingIds?: number[];
+          seatNumbers?: string[];
+          amount?: number;
+        }>(passengerId, '/passenger/bookings', {
+          method: 'POST',
+          body: JSON.stringify({
+            tripId: bookingDialogTrip.tripId,
+            seatCount: selectedSeatCount,
+            amount: totalAmount,
+            travelDate,
+            pickupPoint,
+            dropoffPoint,
+          }),
+        });
+        const bookingIds = result.bookingIds?.length ? result.bookingIds : result.bookingId ? [result.bookingId] : [];
+        if (!bookingIds.length) throw new Error('The booking was created without a confirmation number. Contact support before retrying.');
+        checkout = { bookingIds, seatNumbers: result.seatNumbers ?? [], amount: Number(result.amount ?? totalAmount) };
+        setBookingCheckout(checkout);
+      }
+      await passengerApi<{ paymentStatus: string; bookingStatus: string }>(passengerId, '/passenger/payments', {
+        method: 'POST',
+        body: JSON.stringify({ bookingIds: checkout.bookingIds, amount: checkout.amount, method: paymentMethod }),
+      });
+      setBookingCompleted(true);
+      setPaymentConfirmation({ bookingIds: checkout.bookingIds, amount: checkout.amount });
+      setToast({ kind: 'success', text: 'Your journey is booked and payment is confirmed.' });
+      refreshPassengerData().catch(() => undefined);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Booking could not be completed.';
-      setSeatError(message);
-      setToast({ kind: 'error', text: message });
-    } finally { setBusyAction(null); }
+      setBookingFlowError(error instanceof Error ? error.message : 'Your booking could not be completed.');
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const payBooking = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -851,6 +935,189 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
     { id: 'feedback', label: 'Feedback', icon: <MessageSquare size={16} /> },
     { id: 'profile', label: 'Profile', icon: <UserCheck size={16} /> },
   ];
+  const bookingStepLabels: Array<{ step: BookingStep; label: string }> = [
+    { step: 1, label: 'Journey' },
+    { step: 2, label: 'Pickup' },
+    { step: 3, label: 'Passenger' },
+    { step: 4, label: 'Seats' },
+    { step: 5, label: 'Payment' },
+    { step: 6, label: 'Confirm' },
+  ];
+  const bookingRoute = bookingDialogTrip ? routes.find((route) => route.id === bookingDialogTrip.routeId) : undefined;
+  const journeyStops = bookingDialogTrip
+    ? [...new Set([bookingDialogTrip.origin, ...(bookingRoute?.stops ?? []).filter(Boolean), bookingDialogTrip.destination])]
+    : [];
+  const bookingWizard = bookingDialogTrip ? (
+    <div className="space-y-5" aria-label="Journey booking">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-blue-700">Step {bookingStep} of 6</p>
+          <h2 className="mt-1 text-xl font-bold text-slate-900">{['Journey Details', 'Travel Date & Stops', 'Passenger Information', 'Seat Selection', 'Payment Method', 'Booking Summary'][bookingStep - 1]}</h2>
+          <p className="mt-1 text-sm text-slate-500">{bookingDialogTrip.origin} <ArrowRight size={14} className="mx-1 inline" /> {bookingDialogTrip.destination}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => { setBookingDialogTrip(null); setBookingStep(1); }}
+          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Back to trips
+        </button>
+      </div>
+
+      <ol className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6" aria-label="Booking progress">
+        {bookingStepLabels.map(({ step, label }) => {
+          const completed = bookingCompleted || step < bookingStep;
+          const current = step === bookingStep;
+          return (
+            <li key={step}>
+              <button
+                type="button"
+                aria-current={current ? 'step' : undefined}
+                disabled={step >= bookingStep || bookingCompleted}
+                onClick={() => setBookingStep(step)}
+                className={`flex min-h-12 w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs font-semibold transition-colors ${current ? 'border-blue-700 bg-blue-50 text-blue-800' : completed ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-500'} disabled:cursor-default`}
+              >
+                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] ${completed ? 'bg-emerald-600 text-white' : current ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                  {completed ? <Check size={13} /> : step}
+                </span>
+                <span className="truncate">{label}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+
+      {bookingFlowError && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">{bookingFlowError}</div>}
+
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-6">
+        {bookingStep === 1 && (
+          <div className="space-y-4">
+            <div className="grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-center">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">From</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{bookingDialogTrip.origin}</p>
+                <p className="mt-1 text-sm text-slate-600">{dateTime(bookingDialogTrip.departureTime)}</p>
+              </div>
+              <ArrowRight size={20} className="hidden text-blue-700 lg:block" />
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">To</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{bookingDialogTrip.destination}</p>
+                <p className="mt-1 text-sm text-slate-600">{dateTime(bookingDialogTrip.arrivalTime)}</p>
+              </div>
+            </div>
+            <div className="grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div><p className="text-xs text-slate-500">Route</p><p className="mt-1 font-semibold text-slate-900">{bookingDialogTrip.routeCode}</p></div>
+              <div><p className="text-xs text-slate-500">Duration</p><p className="mt-1 flex items-center gap-1 font-semibold text-slate-900"><Clock3 size={14} /> {tripDuration(bookingDialogTrip.departureTime, bookingDialogTrip.arrivalTime) ?? (bookingRoute?.estimatedMinutes ? `${bookingRoute.estimatedMinutes} min` : '—')}</p></div>
+              <div><p className="text-xs text-slate-500">Base fare</p><p className="mt-1 font-semibold text-slate-900">{money(bookingDialogTrip.fareAmount)}</p></div>
+              <div><p className="text-xs text-slate-500">Seats available</p><p className="mt-1 font-semibold text-slate-900">{bookingDialogTrip.availableSeats} of {bookingDialogTrip.totalSeats}</p></div>
+              <div><p className="text-xs text-slate-500">Trip status</p><p className="mt-1 inline-flex rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800">{bookingDialogTrip.status ?? 'Scheduled'}</p></div>
+              {(bookingDialogTrip.vehicleRegistration || bookingDialogTrip.driverName) && <div><p className="text-xs text-slate-500">Operator / vehicle</p><p className="mt-1 font-semibold text-slate-900">{bookingDialogTrip.driverName ?? bookingDialogTrip.vehicleRegistration}</p></div>}
+            </div>
+            <div className="border-t border-slate-100 pt-3">
+              <button type="button" aria-expanded={showJourneyDetails} onClick={() => setShowJourneyDetails((expanded) => !expanded)} className="text-sm font-semibold text-blue-700 hover:text-blue-800">
+                {showJourneyDetails ? 'Hide journey details' : 'View journey details'}
+              </button>
+              {showJourneyDetails && (
+                <div className="mt-3 grid gap-3 rounded-lg bg-slate-50 p-4 text-sm sm:grid-cols-2">
+                  <p><span className="text-slate-500">Trip reference:</span> <span className="font-semibold text-slate-900">#{bookingDialogTrip.tripId}</span></p>
+                  <p><span className="text-slate-500">Route reference:</span> <span className="font-semibold text-slate-900">#{bookingDialogTrip.routeId}</span></p>
+                  {bookingRoute?.distanceKm !== undefined && <p><span className="text-slate-500">Distance:</span> <span className="font-semibold text-slate-900">{bookingRoute.distanceKm} km</span></p>}
+                  {journeyStops.length > 0 && <p className="sm:col-span-2"><span className="text-slate-500">Route stops:</span> <span className="font-semibold text-slate-900">{journeyStops.join(' · ')}</span></p>}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {bookingStep === 2 && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">Confirm when you plan to travel and choose your boarding and arrival points.</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Travel date</span><input type="date" value={travelDate} onChange={(event) => updateBookingDate(event.target.value)} className={inputClass} aria-label="Booking travel date" /></label>
+              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Pickup point</span><select value={pickupPoint} onChange={(event) => setPickupPoint(event.target.value)} className={inputClass} aria-label="Pickup point">{journeyStops.map((stop, index) => <option key={`${stop}-${index}`} value={stop}>{stop}</option>)}</select></label>
+              <label className="space-y-1 text-sm font-semibold text-slate-700"><span>Drop-off point</span><select value={dropoffPoint} onChange={(event) => setDropoffPoint(event.target.value)} className={inputClass} aria-label="Drop-off point">{journeyStops.map((stop, index) => <option key={`${stop}-${index}`} value={stop}>{stop}</option>)}</select></label>
+            </div>
+            <p className="text-xs text-slate-500">Departure: {dateTime(bookingDialogTrip.departureTime)}. The selected travel date must be on or before departure.</p>
+          </div>
+        )}
+
+        {bookingStep === 3 && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">Passenger details are taken from the selected SmartMove profile.</p>
+            {profileLoading ? <div className="h-24 animate-pulse rounded-lg bg-slate-100" aria-label="Loading passenger information" /> : profile ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                {[
+                  ['First name', profile.firstName], ['Last name', profile.lastName], ['Phone', profile.phone ?? 'Not provided'],
+                  ['Email', profile.email], ['NIC / Passport', profile.passportOrNic],
+                ].map(([label, value]) => <div key={label}><p className="text-xs font-semibold text-slate-500">{label}</p><p className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2 text-sm font-medium text-slate-900">{value}</p></div>)}
+              </div>
+            ) : <EmptyState icon={<UserCheck size={22} />} message="Select a passenger profile before continuing." />}
+          </div>
+        )}
+
+        {bookingStep === 4 && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">Choose how many seats you need. SmartMove will assign available seat numbers when you confirm.</p>
+            <div className="flex max-w-xs items-center justify-between rounded-lg border border-slate-200 p-3">
+              <button type="button" aria-label="Remove one seat" disabled={seatCount <= 1} onClick={() => { setSeatCount((count) => Math.max(1, count - 1)); setSeatError(''); }} className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40"><Minus size={16} /></button>
+              <div className="text-center"><p className="text-2xl font-bold text-slate-900">{selectedSeatCount}</p><p className="text-xs text-slate-500">{selectedSeatCount === 1 ? 'seat' : 'seats'}</p></div>
+              <button type="button" aria-label="Add one seat" disabled={selectedSeatCount >= bookingDialogTrip.availableSeats} onClick={() => { setSeatCount((count) => Math.min(bookingDialogTrip.availableSeats, count + 1)); setSeatError(''); }} className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40"><Plus size={16} /></button>
+            </div>
+            {seatError && <p role="alert" className={fieldErrorClass}>{seatError}</p>}
+            <p className="text-xs text-slate-500">{bookingDialogTrip.availableSeats} seats remain on this trip.</p>
+            <div className="flex max-w-sm justify-between border-t border-slate-100 pt-3 text-sm"><span className="text-slate-600">{money(baseFare)} × {selectedSeatCount}</span><strong className="text-slate-900">{money(totalAmount)}</strong></div>
+          </div>
+        )}
+
+        {bookingStep === 5 && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">Choose a payment method for this booking.</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {paymentMethods.map((method) => {
+                const selected = paymentMethod === method;
+                return <button key={method} type="button" aria-pressed={selected} onClick={() => setPaymentMethod(method)} className={`flex min-h-16 items-center justify-between rounded-lg border px-4 py-3 text-sm font-semibold transition-colors ${selected ? 'border-blue-700 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400'}`}><span>{method.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())}</span>{selected && <Check size={16} />}</button>;
+              })}
+            </div>
+          </div>
+        )}
+
+        {bookingStep === 6 && (
+          <div className="space-y-4">
+            {bookingCompleted && (
+              <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-5 text-center">
+                <CheckCircle2 size={28} className="mx-auto text-emerald-700" />
+                <h3 className="mt-2 font-bold text-emerald-900">Journey confirmed</h3>
+                <p className="mt-1 text-sm text-emerald-800">Booking {bookingCheckout?.bookingIds.map((id) => `#${id}`).join(', ')} · {money(bookingCheckout?.amount ?? totalAmount)}</p>
+              </div>
+            )}
+            <h3 className="font-bold text-slate-900">{bookingCompleted ? 'Booking summary' : 'Review your booking'}</h3>
+            <dl className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+              {[
+                ['Journey', `${bookingDialogTrip.origin} to ${bookingDialogTrip.destination} · ${bookingDialogTrip.routeCode}`],
+                ['Departure', dateTime(bookingDialogTrip.departureTime)], ['Pickup', pickupPoint], ['Drop-off', dropoffPoint],
+                ['Passenger', profile ? `${profile.firstName} ${profile.lastName}` : ''],
+                ['Seats', `${selectedSeatCount}${bookingCheckout?.seatNumbers.length ? ` · ${bookingCheckout.seatNumbers.join(', ')}` : ''}`],
+                ['Payment', paymentMethod.replaceAll('_', ' ')],
+              ].map(([label, value]) => <div key={label} className="flex flex-wrap justify-between gap-2 px-4 py-3 text-sm"><dt className="text-slate-500">{label}</dt><dd className="font-semibold capitalize text-slate-900">{value}</dd></div>)}
+              <div className="flex justify-between gap-2 bg-slate-50 px-4 py-3 text-base"><dt className="font-bold text-slate-900">Total</dt><dd className="font-bold text-slate-900">{money(bookingCheckout?.amount ?? totalAmount)}</dd></div>
+            </dl>
+            {bookingCheckout && !bookingCompleted && <p className="text-xs text-amber-700">Seats are reserved. Retry payment to finish confirming this booking.</p>}
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button type="button" onClick={() => setBookingStep((step) => Math.max(1, step - 1) as BookingStep)} disabled={bookingStep === 1 || bookingCompleted} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"><ChevronLeft size={16} /> Back</button>
+        {bookingStep < 6 ? (
+          <button type="button" onClick={advanceBookingStep} disabled={busyAction === 'booking' || (bookingStep === 3 && (profileLoading || !profile))} className="inline-flex items-center gap-1 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-bold text-white hover:bg-blue-800 disabled:opacity-50">Continue <ChevronRight size={16} /></button>
+        ) : !bookingCompleted ? (
+          <button type="button" onClick={confirmJourneyBooking} disabled={busyAction === 'booking'} className="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">{busyAction === 'booking' ? 'Confirming…' : bookingCheckout ? 'Retry payment' : 'Confirm and pay'}</button>
+        ) : (
+          <button type="button" onClick={() => { setBookingDialogTrip(null); setBookingStep(1); }} className="rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-bold text-white hover:bg-blue-800">Done</button>
+        )}
+      </div>
+    </div>
+  ) : null;
   const paymentDialogBooking = paymentDialogBookings?.[0] ?? null;
   const paymentDialogAmount = paymentDialogBookings?.reduce((total, booking) => total + Number(booking.amount), 0) ?? 0;
 
@@ -946,6 +1213,8 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
       <div id={`passenger-panel-${activeTab}`} role="tabpanel" className="min-h-64">
         {activeTab === 'find' && (
           <section className="space-y-4">
+            {bookingDialogTrip ? bookingWizard : (
+              <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900">Find a trip</h2>
@@ -1119,6 +1388,8 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
                 )}
               </div>
             )}
+              </>
+            )}
           </section>
         )}
 
@@ -1206,71 +1477,6 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
       </div>
 
       {/* ── Dialog Modals ── */}
-      <Modal isOpen={Boolean(bookingDialogTrip)} onClose={() => { if (busyAction !== 'booking') setBookingDialogTrip(null); }} title="Book trip seat" size="md">
-        {bookingDialogTrip && (
-          <FocusTrap>
-            <form onSubmit={bookTrip} noValidate className="space-y-4">
-              <div className="rounded-lg bg-blue-50 p-4 border border-blue-100">
-                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-                  {bookingDialogTrip.origin} <ArrowRight size={16} className="text-blue-700" /> {bookingDialogTrip.destination}
-                </h3>
-                <p className="mt-1 text-xs text-slate-600">
-                  {dateTime(bookingDialogTrip.departureTime)} · Route {bookingDialogTrip.routeCode}
-                </p>
-              </div>
-
-              <label className="block space-y-1 text-xs font-semibold text-slate-700">
-                <span>Number of seats</span>
-                <input
-                  type="number"
-                  min="1"
-                  max={bookingDialogTrip.availableSeats}
-                  step="1"
-                  value={seatCount}
-                  onChange={(e) => {
-                    const count = Number(e.target.value);
-                    const normalizedCount = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
-                    setSeatCount(normalizedCount);
-                    setSeatError(normalizedCount > bookingDialogTrip.availableSeats
-                      ? `Only ${bookingDialogTrip.availableSeats} seats are available for this trip.`
-                      : '');
-                  }}
-                  className={inputClass}
-                  aria-label="Number of seats"
-                  aria-invalid={Boolean(seatError)}
-                />
-                {seatError && <span className={fieldErrorClass}>{seatError}</span>}
-                <span className="text-[11px] font-normal text-slate-500">Choose 1 to {bookingDialogTrip.availableSeats} available seats.</span>
-              </label>
-
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
-                <div className="flex justify-between gap-4 text-slate-600">
-                  <span>Fare per seat</span>
-                  <span>{money(baseFare)}</span>
-                </div>
-                <div className="mt-2 flex justify-between gap-4 text-slate-600">
-                  <span>Seats</span>
-                  <span>{selectedSeatCount}</span>
-                </div>
-                <div className="mt-3 flex justify-between gap-4 border-t border-slate-200 pt-3 font-bold text-slate-900">
-                  <span>Total amount</span>
-                  <span>{money(totalAmount)}</span>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setBookingDialogTrip(null)} disabled={busyAction === 'booking'} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-                  Cancel
-                </button>
-                <button type="submit" disabled={busyAction === 'booking' || selectedSeatCount > bookingDialogTrip.availableSeats} className="rounded-lg bg-blue-700 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
-                  {busyAction === 'booking' ? 'Booking…' : 'Confirm Booking'}
-                </button>
-              </div>
-            </form>
-          </FocusTrap>
-        )}
-      </Modal>
-
       <Modal isOpen={Boolean(paymentDialogBookings?.length)} onClose={() => { if (busyAction !== 'payment') setPaymentDialogBookings(null); }} title="Complete payment" size="md">
         {paymentDialogBooking && (
           <FocusTrap>

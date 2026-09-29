@@ -320,11 +320,137 @@ export async function oraclePassengerBookSeat(passengerId: number, tripId: numbe
   });
 }
 
+export async function oraclePassengerBookSeats(
+  passengerId: number,
+  tripId: number,
+  seatCount: number,
+  expectedAmount: number,
+): Promise<{ bookingId: number; bookingIds: number[]; seatNumbers: string[]; seatCount: number; amount: number }> {
+  if (!Number.isInteger(seatCount) || seatCount < 1) {
+    throw Object.assign(new Error('seatCount must be a positive whole number.'), { statusCode: 400 });
+  }
+  return withPassengerTransaction(async (connection) => {
+    const tripResult = await connection.execute<Record<string, unknown>>(
+      `SELECT t.status, t.departure_time, t.total_seats, t.available_seats, r.fare_amount
+         FROM trips t JOIN routes r ON r.route_id = t.route_id
+        WHERE t.trip_id = :tripId FOR UPDATE OF t.available_seats`,
+      { tripId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const trip = tripResult.rows?.[0];
+    if (!trip) throw Object.assign(new Error('Trip was not found.'), { statusCode: 404 });
+    if (String(trip.STATUS).toLowerCase() !== 'scheduled') {
+      throw Object.assign(new Error('Only scheduled trips can be booked.'), { statusCode: 400 });
+    }
+    const departureTime = trip.DEPARTURE_TIME instanceof Date ? trip.DEPARTURE_TIME.getTime() : Date.parse(String(trip.DEPARTURE_TIME));
+    if (!Number.isFinite(departureTime) || departureTime <= Date.now()) {
+      throw Object.assign(new Error('Trip has already departed or is not in the future.'), { statusCode: 400 });
+    }
+    const availableSeats = Number(trip.AVAILABLE_SEATS);
+    const totalSeats = Number(trip.TOTAL_SEATS);
+    if (seatCount > availableSeats) {
+      throw Object.assign(new Error(`Only ${availableSeats} seats are available for this trip.`), { statusCode: 400 });
+    }
+    const existingPassengerBooking = await connection.execute<{ BOOKING_COUNT: number }>(
+      `SELECT COUNT(*) AS booking_count FROM bookings
+        WHERE trip_id = :tripId AND passenger_id = :passengerId AND status IN ('pending', 'confirmed')`,
+      { tripId, passengerId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    if (Number(existingPassengerBooking.rows?.[0]?.BOOKING_COUNT ?? 0) > 0) {
+      throw Object.assign(new Error('Passenger already has an active booking on this trip.'), { statusCode: 400 });
+    }
+    const fareAmount = Number(trip.FARE_AMOUNT);
+    const totalAmount = Math.round(fareAmount * seatCount * 100) / 100;
+    if (!Number.isFinite(fareAmount) || Math.round(expectedAmount * 100) !== Math.round(totalAmount * 100)) {
+      throw Object.assign(new Error('Booking amount must equal the fare multiplied by the seat count.'), { statusCode: 400 });
+    }
+    const occupiedResult = await connection.execute<Record<string, unknown>>(
+      `SELECT seat_number FROM bookings
+        WHERE trip_id = :tripId AND status IN ('pending', 'confirmed')`,
+      { tripId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const occupiedSeats = new Set((occupiedResult.rows ?? []).map((row) => {
+      const match = String(row.SEAT_NUMBER ?? '').match(/[0-9]+/);
+      return match ? Number(match[0]) : NaN;
+    }).filter(Number.isFinite));
+    const seatNumbers = Array.from({ length: totalSeats }, (_, index) => index + 1)
+      .filter((seat) => !occupiedSeats.has(seat))
+      .slice(0, seatCount)
+      .map(String);
+    if (seatNumbers.length !== seatCount) {
+      throw Object.assign(new Error('There are not enough unbooked seats for this request.'), { statusCode: 400 });
+    }
+    const bookingIds: number[] = [];
+    for (const seatNumber of seatNumbers) {
+      const sequenceResult = await connection.execute<{ BOOKING_ID: number }>(
+        'SELECT seq_bookings_id.NEXTVAL AS booking_id FROM dual',
+        [],
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      const bookingId = Number(sequenceResult.rows?.[0]?.BOOKING_ID);
+      await connection.execute(
+        `INSERT INTO bookings (booking_id, trip_id, passenger_id, seat_number, booking_date, status, amount)
+         VALUES (:bookingId, :tripId, :passengerId, :seatNumber, SYSDATE, 'pending', :amount)`,
+        { bookingId, tripId, passengerId, seatNumber, amount: fareAmount },
+      );
+      bookingIds.push(bookingId);
+    }
+    await connection.execute(
+      'UPDATE trips SET available_seats = available_seats - :seatCount WHERE trip_id = :tripId',
+      { seatCount, tripId },
+    );
+    return { bookingId: bookingIds[0], bookingIds, seatNumbers, seatCount, amount: totalAmount };
+  });
+}
+
 export async function oraclePassengerPayBooking(passengerId: number, bookingId: number, amount: number, method: string): Promise<void> {
   await withPassengerTransaction((connection) => connection.execute(
     'BEGIN passenger_pay_booking(:passengerId, :bookingId, :amount, :method); END;',
     { passengerId, bookingId, amount, method },
   ).then(() => undefined));
+}
+
+export async function oraclePassengerPayBookings(
+  passengerId: number,
+  bookingIds: number[],
+  totalAmount: number,
+  method: string,
+): Promise<void> {
+  if (!bookingIds.length || new Set(bookingIds).size !== bookingIds.length) {
+    throw Object.assign(new Error('Unique bookingIds are required.'), { statusCode: 400 });
+  }
+  await withPassengerTransaction(async (connection) => {
+    const idBinds = Object.fromEntries(bookingIds.map((bookingId, index) => [`bookingId${index}`, bookingId]));
+    const idParameters = bookingIds.map((_, index) => `:bookingId${index}`).join(', ');
+    const bookingsResult = await connection.execute<Record<string, unknown>>(
+      `SELECT booking_id, passenger_id, status, amount FROM bookings
+        WHERE booking_id IN (${idParameters}) FOR UPDATE`,
+      idBinds,
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const bookingRows = bookingsResult.rows ?? [];
+    if (bookingRows.length !== bookingIds.length) {
+      throw Object.assign(new Error('A booking was not found.'), { statusCode: 404 });
+    }
+    if (bookingRows.some((booking) => Number(booking.PASSENGER_ID) !== passengerId)) {
+      throw Object.assign(new Error('Booking does not belong to this passenger.'), { statusCode: 400 });
+    }
+    if (bookingRows.some((booking) => String(booking.STATUS).toLowerCase() !== 'pending')) {
+      throw Object.assign(new Error('Only pending bookings can be paid.'), { statusCode: 400 });
+    }
+    const total = Math.round(bookingRows.reduce((sum, booking) => sum + Number(booking.AMOUNT), 0) * 100) / 100;
+    if (Math.round(totalAmount * 100) !== Math.round(total * 100)) {
+      throw Object.assign(new Error('Payment amount must equal the total booking amount.'), { statusCode: 400 });
+    }
+    for (const booking of bookingRows) {
+      await connection.execute(
+        'BEGIN passenger_pay_booking(:passengerId, :bookingId, :amount, :method); END;',
+        { passengerId, bookingId: Number(booking.BOOKING_ID), amount: Number(booking.AMOUNT), method },
+      );
+    }
+  });
 }
 
 export async function oraclePassengerCancelBooking(passengerId: number, bookingId: number): Promise<void> {

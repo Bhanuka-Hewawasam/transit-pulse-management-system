@@ -12,7 +12,9 @@ const oracleMocks = vi.hoisted(() => ({
   passengerBookings: vi.fn(),
   passengerProfile: vi.fn(),
   passengerBookSeat: vi.fn(),
+  passengerBookSeats: vi.fn(),
   passengerPayBooking: vi.fn(),
+  passengerPayBookings: vi.fn(),
   passengerCancelBooking: vi.fn(),
   passengerSubmitFeedback: vi.fn(),
   passengerUpdateProfile: vi.fn(),
@@ -46,7 +48,9 @@ vi.mock('./oracleAdapter.js', () => ({
   oraclePassengerBookings: oracleMocks.passengerBookings,
   oraclePassengerProfile: oracleMocks.passengerProfile,
   oraclePassengerBookSeat: oracleMocks.passengerBookSeat,
+  oraclePassengerBookSeats: oracleMocks.passengerBookSeats,
   oraclePassengerPayBooking: oracleMocks.passengerPayBooking,
+  oraclePassengerPayBookings: oracleMocks.passengerPayBookings,
   oraclePassengerCancelBooking: oracleMocks.passengerCancelBooking,
   oraclePassengerSubmitFeedback: oracleMocks.passengerSubmitFeedback,
   oraclePassengerUpdateProfile: oracleMocks.passengerUpdateProfile,
@@ -298,6 +302,88 @@ describe('SmartMove backend API', () => {
     expect(oracleMocks.passengerExists).toHaveBeenCalledWith(7);
     expect(oracleMocks.passengerBookSeat).toHaveBeenCalledWith(7, 12, '4');
     expect(response.body).toEqual({ bookingId: 81, tripId: 12, status: 'pending' });
+  });
+
+  it('forwards multi-seat bookings and aggregate payments to Oracle', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    oracleMocks.passengerExists.mockResolvedValue(true);
+    oracleMocks.passengerBookSeats.mockResolvedValue({
+      bookingId: 81, bookingIds: [81, 82], seatNumbers: ['1', '2'], seatCount: 2, amount: 1000,
+    });
+    const booking = await request(app).post('/api/passenger/bookings').set('X-Passenger-Id', '7')
+      .send({ tripId: 12, seatCount: 2, amount: 1000 });
+    expect(booking.status).toBe(201);
+    expect(oracleMocks.passengerBookSeats).toHaveBeenCalledWith(7, 12, 2, 1000);
+    expect(booking.body).toMatchObject({ bookingIds: [81, 82], amount: 1000, seatCount: 2 });
+
+    oracleMocks.passengerPayBookings.mockResolvedValue(undefined);
+    const payment = await request(app).post('/api/passenger/payments').set('X-Passenger-Id', '7')
+      .send({ bookingIds: [81, 82], amount: 1000, method: 'card' });
+    expect(payment.status).toBe(200);
+    expect(oracleMocks.passengerPayBookings).toHaveBeenCalledWith(7, [81, 82], 1000, 'card');
+    expect(payment.body).toMatchObject({ bookingIds: [81, 82], amount: 1000, paymentStatus: 'paid' });
+  });
+
+  it('books multiple seats at the calculated total and pays the whole group in demo mode', async () => {
+    const passenger = database.passengers[0];
+    const trip = database.trips.find((candidate) => candidate.totalSeats >= 2)!;
+    const route = database.routes.find((item) => item.id === trip.routeId)!;
+    const originalTrip = { status: trip.status, departureTime: trip.departureTime, availableSeats: trip.availableSeats };
+    const originalBookings = [...database.bookings];
+    const originalBookingStatuses = new Map(database.bookings.map((booking) => [booking.id, booking.status]));
+    const originalPayments = [...database.payments];
+    const originalTotalBookings = passenger.totalBookings;
+    try {
+      trip.status = 'scheduled';
+      trip.departureTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      trip.availableSeats = trip.totalSeats;
+      database.bookings.filter((booking) => booking.tripId === trip.id && ['pending', 'confirmed'].includes(booking.status))
+        .forEach((booking) => { booking.status = 'cancelled'; });
+      const passengerHeader = { 'X-Passenger-Id': String(passenger.id) };
+      const amount = route.fareAmount * 2;
+
+      trip.availableSeats = 1;
+      const overCapacity = await request(app).post('/api/passenger/bookings').set(passengerHeader)
+        .send({ tripId: trip.id, seatCount: 2, amount });
+      expect(overCapacity.status).toBe(400);
+      expect(overCapacity.body.error).toMatch(/Only 1 seats are available/);
+
+      trip.availableSeats = trip.totalSeats;
+      const wrongBookingAmount = await request(app).post('/api/passenger/bookings').set(passengerHeader)
+        .send({ tripId: trip.id, seatCount: 2, amount: route.fareAmount });
+      expect(wrongBookingAmount.status).toBe(400);
+      expect(wrongBookingAmount.body.error).toMatch(/fare multiplied by the seat count/);
+
+      const booking = await request(app).post('/api/passenger/bookings').set(passengerHeader)
+        .send({ tripId: trip.id, seatCount: 2, amount });
+      expect(booking.status).toBe(201);
+      expect(booking.body).toMatchObject({ seatCount: 2, amount, seatNumbers: ['1', '2'] });
+      expect(booking.body.bookingIds).toHaveLength(2);
+      expect(new Set(booking.body.bookingIds).size).toBe(2);
+      expect(trip.availableSeats).toBe(trip.totalSeats - 2);
+      expect(database.bookings.filter((record) => booking.body.bookingIds.includes(record.id)).map((record) => record.amount))
+        .toEqual([route.fareAmount, route.fareAmount]);
+
+      const wrongPaymentAmount = await request(app).post('/api/passenger/payments').set(passengerHeader)
+        .send({ bookingIds: booking.body.bookingIds, amount: route.fareAmount, method: 'card' });
+      expect(wrongPaymentAmount.status).toBe(400);
+      expect(wrongPaymentAmount.body.error).toMatch(/total booking amount/);
+
+      const payment = await request(app).post('/api/passenger/payments').set(passengerHeader)
+        .send({ bookingIds: booking.body.bookingIds, amount, method: 'card' });
+      expect(payment.status).toBe(200);
+      expect(payment.body).toMatchObject({ bookingIds: booking.body.bookingIds, amount, paymentStatus: 'paid' });
+      expect(database.bookings.filter((record) => booking.body.bookingIds.includes(record.id)).every((record) => record.status === 'confirmed')).toBe(true);
+      expect(database.payments.filter((record) => booking.body.bookingIds.includes(record.bookingId)).map((record) => record.amount))
+        .toEqual([route.fareAmount, route.fareAmount]);
+      expect(passenger.totalBookings).toBe(originalTotalBookings + 2);
+    } finally {
+      database.bookings.splice(0, database.bookings.length, ...originalBookings);
+      for (const booking of originalBookings) booking.status = originalBookingStatuses.get(booking.id) ?? booking.status;
+      database.payments.splice(0, database.payments.length, ...originalPayments);
+      Object.assign(trip, originalTrip);
+      passenger.totalBookings = originalTotalBookings;
+    }
   });
 
   it('passes Oracle passenger search filters and maps procedure errors to HTTP 400', async () => {

@@ -267,9 +267,9 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   const [toast, setToast] = useState<Toast | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [bookingDialogTrip, setBookingDialogTrip] = useState<PassengerTrip | null>(null);
-  const [paymentDialogBooking, setPaymentDialogBooking] = useState<PassengerBooking | null>(null);
+  const [paymentDialogBookings, setPaymentDialogBookings] = useState<PassengerBooking[] | null>(null);
   const [cancelDialogBooking, setCancelDialogBooking] = useState<PassengerBooking | null>(null);
-  const [seatNumber, setSeatNumber] = useState('');
+  const [seatCount, setSeatCount] = useState(1);
   const [seatError, setSeatError] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('card');
   const [paymentError, setPaymentError] = useState('');
@@ -279,7 +279,11 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   const [contentSource, setContentSource] = useState<'mongodb' | 'demo' | 'unavailable'>('unavailable');
   const [announcements, setAnnouncements] = useState<ContentItem[]>([]);
   const [reviewCount, setReviewCount] = useState(0);
-  const [paymentConfirmation, setPaymentConfirmation] = useState<{ bookingId: number } | null>(null);
+  const [paymentConfirmation, setPaymentConfirmation] = useState<{ bookingIds: number[]; amount: number } | null>(null);
+
+  const selectedSeatCount = Math.max(1, Math.floor(Number(seatCount) || 1));
+  const baseFare = Number(bookingDialogTrip?.fareAmount ?? 0);
+  const totalAmount = baseFare * selectedSeatCount;
 
   useEffect(() => {
     let active = true;
@@ -466,6 +470,8 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
     setSelectedRouteId(null);
     setSelectedTripId(null);
     setBookingDialogTrip(null);
+    setSeatCount(1);
+    setSeatError('');
     setTrips([]);
     setTripsError(null);
   };
@@ -496,7 +502,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
       setToast({ kind: 'error', text: 'Select an origin, destination, travel date, route, and trip before booking.' });
       return;
     }
-    setSeatNumber('');
+    setSeatCount(1);
     setSeatError('');
     setBookingDialogTrip(trip);
   };
@@ -514,16 +520,19 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
       setToast({ kind: 'error', text: 'Select an origin, destination, travel date, route, and trip before booking.' });
       return;
     }
-    const seat = Number(seatNumber);
-    if (!/^\d+$/.test(seatNumber) || !Number.isInteger(seat) || seat < 1 || seat > bookingDialogTrip.totalSeats) {
-      setSeatError(`Enter a whole seat number from 1 to ${bookingDialogTrip.totalSeats}.`);
+    if (!Number.isInteger(selectedSeatCount) || selectedSeatCount < 1) {
+      setSeatError('Select at least one seat.');
+      return;
+    }
+    if (selectedSeatCount > bookingDialogTrip.availableSeats) {
+      setSeatError(`Only ${bookingDialogTrip.availableSeats} seats are available for this trip.`);
       return;
     }
     setSeatError('');
     setBusyAction('booking');
     try {
-      await passengerApi(passengerId, '/passenger/bookings', { method: 'POST', body: JSON.stringify({ tripId: bookingDialogTrip.tripId, seatNumber: String(seat) }) });
-      setToast({ kind: 'success', text: 'Booking created. Complete payment to confirm your seat.' });
+      await passengerApi<{ bookingIds: number[]; amount: number }>(passengerId, '/passenger/bookings', { method: 'POST', body: JSON.stringify({ tripId: bookingDialogTrip.tripId, seatCount: selectedSeatCount, amount: totalAmount }) });
+      setToast({ kind: 'success', text: `${selectedSeatCount} seat${selectedSeatCount === 1 ? '' : 's'} booked. Complete payment to confirm.` });
       setBookingDialogTrip(null);
       await refreshPassengerData();
     } catch (error) {
@@ -535,13 +544,15 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
 
   const payBooking = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!paymentDialogBooking) return;
+    if (!paymentDialogBookings?.length) return;
+    const bookingIds = paymentDialogBookings.map((booking) => booking.bookingId);
+    const amount = paymentDialogBookings.reduce((total, booking) => total + Number(booking.amount), 0);
     setPaymentError('');
     setBusyAction('payment');
     try {
-      await passengerApi<{ bookingId: number; paymentStatus: string; bookingStatus: string }>(passengerId, '/passenger/payments', { method: 'POST', body: JSON.stringify({ bookingId: paymentDialogBooking.bookingId, amount: paymentDialogBooking.amount, method: paymentMethod }) });
-      setPaymentConfirmation({ bookingId: paymentDialogBooking.bookingId });
-      setPaymentDialogBooking(null);
+      await passengerApi<{ bookingIds: number[]; paymentStatus: string; bookingStatus: string }>(passengerId, '/passenger/payments', { method: 'POST', body: JSON.stringify({ bookingIds, amount, method: paymentMethod }) });
+      setPaymentConfirmation({ bookingIds, amount });
+      setPaymentDialogBookings(null);
       setToast({ kind: 'success', text: 'Payment accepted and booking confirmed.' });
       await refreshPassengerData();
     } catch (error) {
@@ -619,6 +630,9 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   };
 
   const bookingCard = (booking: PassengerBooking) => {
+    const payableBookings = bookings.filter((item) => item.tripId === booking.tripId
+      && item.bookingStatus === 'pending' && ['unpaid', 'pending'].includes(item.paymentStatus));
+    const firstPayableBookingId = Math.min(...payableBookings.map((item) => item.bookingId));
     return (
       <article key={booking.bookingId} className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs transition-all hover:shadow-xs">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -645,14 +659,14 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
         </div>
 
         <div className="mt-4 flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-          {booking.bookingStatus === 'pending' && ['unpaid', 'pending'].includes(booking.paymentStatus) && (
+          {payableBookings.length > 0 && booking.bookingId === firstPayableBookingId && (
             <button
               type="button"
-              onClick={() => setPaymentDialogBooking(booking)}
+              onClick={() => setPaymentDialogBookings(payableBookings)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-2xs hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             >
               <CreditCard size={14} />
-              Pay now
+              Pay {payableBookings.length > 1 ? `${payableBookings.length} seats` : 'now'}
             </button>
           )}
           {booking.canCancel && (
@@ -837,6 +851,8 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
     { id: 'feedback', label: 'Feedback', icon: <MessageSquare size={16} /> },
     { id: 'profile', label: 'Profile', icon: <UserCheck size={16} /> },
   ];
+  const paymentDialogBooking = paymentDialogBookings?.[0] ?? null;
+  const paymentDialogAmount = paymentDialogBookings?.reduce((total, booking) => total + Number(booking.amount), 0) ?? 0;
 
   return (
     <div className="space-y-6">
@@ -897,7 +913,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
           <CheckCircle2 className="mt-0.5 shrink-0" size={18} />
           <div>
             <p className="font-bold">Payment confirmed!</p>
-            <p className="text-slate-600 font-normal">Booking #{paymentConfirmation.bookingId} has been confirmed.</p>
+            <p className="text-slate-600 font-normal">Bookings #{paymentConfirmation.bookingIds.join(', ')} have been paid: {money(paymentConfirmation.amount)}.</p>
           </div>
         </div>
       )}
@@ -1006,7 +1022,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
                           key={route.id}
                           type="button"
                           aria-pressed={selected}
-                          onClick={() => { setSelectedRouteId(route.id); setSelectedTripId(null); }}
+                          onClick={() => { setSelectedRouteId(route.id); setSelectedTripId(null); setSeatCount(1); setSeatError(''); }}
                           className={`rounded-xl border p-4 text-left shadow-2xs transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${selected ? 'border-blue-700 bg-blue-50' : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-slate-50'}`}
                         >
                           <span className="text-xs font-bold text-blue-700">{route.routeCode}</span>
@@ -1070,7 +1086,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => setSelectedTripId(trip.tripId)}
+                          onClick={() => { setSelectedTripId(trip.tripId); setSeatCount(1); setSeatError(''); }}
                           disabled={isFull}
                           aria-pressed={selected}
                           className={`rounded-lg px-4 py-2 text-xs font-bold transition-all shadow-2xs focus:outline-none focus:ring-2 focus:ring-blue-500 ${
@@ -1204,32 +1220,49 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
               </div>
 
               <label className="block space-y-1 text-xs font-semibold text-slate-700">
-                <span>Seat number</span>
+                <span>Number of seats</span>
                 <input
                   type="number"
                   min="1"
-                  max={bookingDialogTrip.totalSeats}
+                  max={bookingDialogTrip.availableSeats}
                   step="1"
-                  value={seatNumber}
-                  onChange={(e) => { setSeatNumber(e.target.value); setSeatError(''); }}
+                  value={seatCount}
+                  onChange={(e) => {
+                    const count = Number(e.target.value);
+                    const normalizedCount = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
+                    setSeatCount(normalizedCount);
+                    setSeatError(normalizedCount > bookingDialogTrip.availableSeats
+                      ? `Only ${bookingDialogTrip.availableSeats} seats are available for this trip.`
+                      : '');
+                  }}
                   className={inputClass}
-                  aria-label="Seat number"
+                  aria-label="Number of seats"
                   aria-invalid={Boolean(seatError)}
                 />
                 {seatError && <span className={fieldErrorClass}>{seatError}</span>}
-                <span className="text-[11px] font-normal text-slate-500">Enter a seat number between 1 and {bookingDialogTrip.totalSeats}.</span>
+                <span className="text-[11px] font-normal text-slate-500">Choose 1 to {bookingDialogTrip.availableSeats} available seats.</span>
               </label>
 
-              <label className="block space-y-1 text-xs font-semibold text-slate-700">
-                <span>Fare amount</span>
-                <input value={money(bookingDialogTrip.fareAmount)} readOnly className={`${inputClass} bg-slate-50 text-slate-600 font-bold`} aria-label="Fare" />
-              </label>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+                <div className="flex justify-between gap-4 text-slate-600">
+                  <span>Fare per seat</span>
+                  <span>{money(baseFare)}</span>
+                </div>
+                <div className="mt-2 flex justify-between gap-4 text-slate-600">
+                  <span>Seats</span>
+                  <span>{selectedSeatCount}</span>
+                </div>
+                <div className="mt-3 flex justify-between gap-4 border-t border-slate-200 pt-3 font-bold text-slate-900">
+                  <span>Total amount</span>
+                  <span>{money(totalAmount)}</span>
+                </div>
+              </div>
 
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setBookingDialogTrip(null)} disabled={busyAction === 'booking'} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                   Cancel
                 </button>
-                <button type="submit" disabled={busyAction === 'booking'} className="rounded-lg bg-blue-700 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
+                <button type="submit" disabled={busyAction === 'booking' || selectedSeatCount > bookingDialogTrip.availableSeats} className="rounded-lg bg-blue-700 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
                   {busyAction === 'booking' ? 'Booking…' : 'Confirm Booking'}
                 </button>
               </div>
@@ -1238,18 +1271,18 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
         )}
       </Modal>
 
-      <Modal isOpen={Boolean(paymentDialogBooking)} onClose={() => { if (busyAction !== 'payment') setPaymentDialogBooking(null); }} title="Complete payment" size="md">
+      <Modal isOpen={Boolean(paymentDialogBookings?.length)} onClose={() => { if (busyAction !== 'payment') setPaymentDialogBookings(null); }} title="Complete payment" size="md">
         {paymentDialogBooking && (
           <FocusTrap>
             <form onSubmit={payBooking} noValidate className="space-y-4">
               <div className="rounded-lg bg-slate-50 p-4 border border-slate-200">
                 <p className="text-xs font-bold text-slate-900">{routeTitle(paymentDialogBooking)}</p>
-                <p className="text-xs text-slate-500 mt-1">Booking #{paymentDialogBooking.bookingId} · Seat {paymentDialogBooking.seatNumber}</p>
+                <p className="text-xs text-slate-500 mt-1">Bookings #{(paymentDialogBookings ?? []).map((booking) => booking.bookingId).join(', ')} · Seats {(paymentDialogBookings ?? []).map((booking) => booking.seatNumber).join(', ')}</p>
               </div>
 
               <label className="block space-y-1 text-xs font-semibold text-slate-700">
                 <span>Amount to pay</span>
-                <input value={money(paymentDialogBooking.amount)} readOnly className={`${inputClass} bg-slate-50 text-slate-900 font-bold text-base`} aria-label="Payment amount" />
+                <input value={money(paymentDialogAmount)} readOnly className={`${inputClass} bg-slate-50 text-slate-900 font-bold text-base`} aria-label="Payment amount" />
               </label>
 
               <label className="block space-y-1 text-xs font-semibold text-slate-700">
@@ -1263,7 +1296,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
               </label>
 
               <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setPaymentDialogBooking(null)} disabled={busyAction === 'payment'} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                <button type="button" onClick={() => setPaymentDialogBookings(null)} disabled={busyAction === 'payment'} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                   Cancel
                 </button>
                 <button type="submit" disabled={busyAction === 'payment'} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60">

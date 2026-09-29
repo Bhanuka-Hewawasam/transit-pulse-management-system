@@ -4,8 +4,8 @@ import { database, nextId } from './database.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, PaymentMethod, Route, Trip, Vehicle } from '../../src/types/index.js';
 import { mongodbContent, mongodbHealth, mongodbPassengerReviews } from './mongodbAdapter.js';
 import {
-  oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookings, oraclePassengerCancelBooking,
-  oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerProfile, oraclePassengerSearchTrips,
+  oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookSeats, oraclePassengerBookings, oraclePassengerCancelBooking,
+  oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerPayBookings, oraclePassengerProfile, oraclePassengerSearchTrips,
   oraclePassengerSubmitFeedback, oraclePassengerUpdateProfile, oracleReport, oracleUpdate, oracleUpdateTripStatus,
   oracleDriverCompleteTrip, oracleDriverExists, oracleDriverFeedback, oracleDriverManifest, oracleDriverProfile,
   oracleDriverStartTrip, oracleDriverSummary, oracleDriverTrips, oracleDriverUpdateProfile, oracleDriverVehicle,
@@ -232,6 +232,56 @@ app.get('/api/passenger/trips', requireActingPassenger, passengerEndpoint(async 
 
 app.post('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
   const tripId = Number(request.body.tripId);
+  if (request.body.seatCount !== undefined) {
+    const seatCount = Number(request.body.seatCount);
+    const amount = Number(request.body.amount);
+    if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(seatCount) || seatCount < 1 || !Number.isFinite(amount)) {
+      return void response.status(400).json({ error: 'tripId, a positive seatCount, and total amount are required.' });
+    }
+    if (process.env.DATABASE_MODE === 'oracle') {
+      const result = await oraclePassengerBookSeats(passengerId, tripId, seatCount, amount);
+      return void response.status(201).json({ ...result, tripId, status: 'pending' });
+    }
+    const trip = database.trips.find((item) => item.id === tripId);
+    if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+    if (trip.status !== 'scheduled') return void response.status(400).json({ error: 'Only scheduled trips can be booked.' });
+    if (new Date(trip.departureTime).getTime() <= Date.now()) return void response.status(400).json({ error: 'Trip has already departed or is not in the future.' });
+    if (seatCount > trip.availableSeats) return void response.status(400).json({ error: `Only ${trip.availableSeats} seats are available for this trip.` });
+    if (database.bookings.some((booking) => booking.tripId === tripId && booking.passengerId === passengerId && ['pending', 'confirmed'].includes(booking.status))) {
+      return void response.status(400).json({ error: 'Passenger already has an active booking on this trip.' });
+    }
+    const route = database.routes.find((item) => item.id === trip.routeId);
+    if (!route) return void response.status(400).json({ error: 'Trip route was not found.' });
+    const totalAmount = Math.round(route.fareAmount * seatCount * 100) / 100;
+    if (Math.round(amount * 100) !== Math.round(totalAmount * 100)) return void response.status(400).json({ error: 'Booking amount must equal the fare multiplied by the seat count.' });
+    const occupiedSeats = new Set(database.bookings
+      .filter((booking) => booking.tripId === tripId && ['pending', 'confirmed'].includes(booking.status))
+      .map((booking) => Number(booking.seatNumber.match(/[0-9]+/)?.[0]))
+      .filter(Number.isFinite));
+    const seatNumbers = Array.from({ length: trip.totalSeats }, (_, index) => index + 1)
+      .filter((seat) => !occupiedSeats.has(seat))
+      .slice(0, seatCount);
+    if (seatNumbers.length !== seatCount) return void response.status(400).json({ error: 'There are not enough unbooked seats for this request.' });
+    const bookingDate = new Date().toISOString();
+    const createdBookings: Booking[] = [];
+    for (const seat of seatNumbers) {
+      createdBookings.push({
+        id: nextId([...database.bookings, ...createdBookings]), tripId, passengerId,
+        seatNumber: String(seat), bookingDate, status: 'pending', amount: route.fareAmount,
+      });
+    }
+    database.bookings.push(...createdBookings);
+    trip.availableSeats -= seatCount;
+    return void response.status(201).json({
+      bookingId: createdBookings[0].id,
+      bookingIds: createdBookings.map((booking) => booking.id),
+      seatNumbers: createdBookings.map((booking) => booking.seatNumber),
+      seatCount,
+      tripId,
+      status: 'pending',
+      amount: totalAmount,
+    });
+  }
   const seatNumber = String(request.body.seatNumber ?? '').trim();
   if (!Number.isInteger(tripId) || tripId <= 0 || !seatNumber) return void response.status(400).json({ error: 'tripId and seatNumber are required.' });
   if (process.env.DATABASE_MODE === 'oracle') {
@@ -261,6 +311,44 @@ app.post('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(as
 }));
 
 app.post('/api/passenger/payments', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  if (Array.isArray(request.body.bookingIds)) {
+    const bookingIds: number[] = (request.body.bookingIds as unknown[]).map(Number);
+    const amount = Number(request.body.amount);
+    const method = String(request.body.method ?? '').toLowerCase();
+    if (!bookingIds.length || bookingIds.some((id) => !Number.isInteger(id) || id <= 0) || new Set(bookingIds).size !== bookingIds.length
+      || !Number.isFinite(amount) || !method) {
+      return void response.status(400).json({ error: 'Unique bookingIds, total amount, and method are required.' });
+    }
+    if (!['card', 'cash', 'online', 'bank_transfer'].includes(method)) return void response.status(400).json({ error: 'Payment method is not valid.' });
+    if (process.env.DATABASE_MODE === 'oracle') {
+      await oraclePassengerPayBookings(passengerId, bookingIds, amount, method);
+      return void response.json({ bookingIds, amount, paymentStatus: 'paid', bookingStatus: 'confirmed' });
+    }
+    const selectedBookings = bookingIds.map((id) => database.bookings.find((booking) => booking.id === id));
+    if (selectedBookings.some((booking) => !booking)) return void response.status(404).json({ error: 'A booking was not found.' });
+    const payableBookings = selectedBookings as Booking[];
+    if (payableBookings.some((booking) => booking.passengerId !== passengerId)) return void response.status(400).json({ error: 'Booking does not belong to this passenger.' });
+    if (payableBookings.some((booking) => booking.status !== 'pending')) return void response.status(400).json({ error: 'Only pending bookings can be paid.' });
+    if (payableBookings.some((booking) => database.payments.some((payment) => payment.bookingId === booking.id && payment.status === 'paid'))) {
+      return void response.status(400).json({ error: 'A booking has already been paid.' });
+    }
+    const totalAmount = Math.round(payableBookings.reduce((total, booking) => total + booking.amount, 0) * 100) / 100;
+    if (Math.round(amount * 100) !== Math.round(totalAmount * 100)) return void response.status(400).json({ error: 'Payment amount must equal the total booking amount.' });
+    const paymentDate = new Date().toISOString();
+    const createdPayments: Payment[] = [];
+    for (const booking of payableBookings) {
+      createdPayments.push({
+        id: nextId([...database.payments, ...createdPayments]), bookingId: booking.id,
+        amount: booking.amount, paymentDate, method: method as PaymentMethod,
+        status: 'paid', transactionRef: `DEMO-${Date.now()}-${booking.id}`,
+      });
+    }
+    database.payments.push(...createdPayments);
+    payableBookings.forEach((booking) => { booking.status = 'confirmed'; });
+    const passenger = database.passengers.find((item) => item.id === passengerId);
+    if (passenger) passenger.totalBookings += payableBookings.length;
+    return void response.json({ bookingIds, amount: totalAmount, paymentStatus: 'paid', bookingStatus: 'confirmed' });
+  }
   const bookingId = Number(request.body.bookingId);
   const amount = Number(request.body.amount);
   const method = String(request.body.method ?? '').toLowerCase();

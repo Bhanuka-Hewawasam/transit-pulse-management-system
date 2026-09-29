@@ -21,7 +21,6 @@ import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
 import SearchableSelect from '../components/SearchableSelect';
 import SearchableDropdown from '../components/SearchableDropdown';
-import { useDebounce } from '../hooks/useDebounce';
 import { ApiError, API_BASE_URL, apiGet } from '../services/api';
 import type { Passenger } from '../types';
 
@@ -104,6 +103,18 @@ const money = (amount: number) => `LKR ${Number(amount).toLocaleString('en-LK', 
 const dateTime = (value?: string | null) => value
   ? new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
   : '—';
+const dateKey = (value: string) => {
+  const datePrefix = value.match(/^(\d{4}-\d{2}-\d{2})(?:$|T|\s)/);
+  if (datePrefix) return datePrefix[1];
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : '';
+};
+const isValidDateOnly = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+};
 const routeTitle = (item: { routeCode?: string; origin?: string; destination?: string }) => `${item.routeCode ?? 'Route'} · ${item.origin ?? ''} to ${item.destination ?? ''}`;
 const inputClass = 'w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 shadow-2xs transition-colors focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100';
 const fieldErrorClass = 'mt-1 text-xs font-semibold text-rose-600';
@@ -236,10 +247,9 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   const [origin, setOrigin] = useState('');
   const [destination, setDestination] = useState('');
   const [travelDate, setTravelDate] = useState('');
-  const [hasSearched, setHasSearched] = useState(false);
-  const [availableDates, setAvailableDates] = useState<string[]>([]);
-  const debouncedOrigin = useDebounce(origin, 300);
-  const debouncedDestination = useDebounce(destination, 300);
+  const [selectedRouteId, setSelectedRouteId] = useState<number | null>(null);
+  const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
+  const [tripsError, setTripsError] = useState<string | null>(null);
 
   const [internalActiveTab, setInternalActiveTab] = useState<PassengerTab>('find');
   const activeTab = externalActiveTab ?? internalActiveTab;
@@ -347,45 +357,35 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   }, [passengerId, applicationMode]);
 
   useEffect(() => {
-    if (!passengerId || !applicationMode) {
+    if (!passengerId || !applicationMode || !origin.trim() || !destination.trim() || !isValidDateOnly(travelDate)) {
       setTrips([]);
-      setAvailableDates([]);
+      setTripsError(null);
+      setTripsLoading(false);
       return;
     }
     let active = true;
     setTripsLoading(true);
+    setTripsError(null);
     const query = new URLSearchParams();
-    if (hasSearched || debouncedOrigin || debouncedDestination) {
-      if (debouncedOrigin.trim()) query.set('origin', debouncedOrigin.trim());
-      if (debouncedDestination.trim()) query.set('destination', debouncedDestination.trim());
-      if (travelDate) query.set('date', travelDate);
-    }
-    const suffix = query.size ? `?${query.toString()}` : '';
-    passengerApi<PassengerTrip[]>(passengerId, `/passenger/trips${suffix}`).then((rows) => {
+    query.set('origin', origin.trim());
+    query.set('destination', destination.trim());
+    passengerApi<PassengerTrip[]>(passengerId, `/passenger/trips?${query.toString()}`).then((rows) => {
       if (active) {
-        setTrips(rows);
-        if (travelDate && rows.length === 0) {
-          const queryWithoutDate = new URLSearchParams();
-          if (debouncedOrigin.trim()) queryWithoutDate.set('origin', debouncedOrigin.trim());
-          if (debouncedDestination.trim()) queryWithoutDate.set('destination', debouncedDestination.trim());
-          const suffixWithoutDate = queryWithoutDate.size ? `?${queryWithoutDate.toString()}` : '';
-          passengerApi<PassengerTrip[]>(passengerId, `/passenger/trips${suffixWithoutDate}`).then((allTrips) => {
-            if (active) {
-              const dates = [...new Set(allTrips.map(trip => trip.departureTime.slice(0, 10)))].sort();
-              setAvailableDates(dates);
-            }
-          }).catch(() => {
-            if (active) setAvailableDates([]);
-          });
-        } else {
-          setAvailableDates([]);
-        }
+        const requestedOrigin = origin.trim().toLowerCase();
+        const requestedDestination = destination.trim().toLowerCase();
+        setTrips(rows.filter((trip) =>
+          trip.origin.trim().toLowerCase() === requestedOrigin
+          && trip.destination.trim().toLowerCase() === requestedDestination
+          && dateKey(trip.departureTime) >= travelDate
+          && new Date(trip.departureTime).getTime() > Date.now()
+          && Number(trip.availableSeats) > 0,
+        ));
       }
     }).catch((error: Error) => {
-      if (active) { setTrips([]); setAvailableDates([]); setToast({ kind: 'error', text: error.message }); }
+      if (active) { setTrips([]); setTripsError(error.message); }
     }).finally(() => { if (active) setTripsLoading(false); });
     return () => { active = false; };
-  }, [passengerId, applicationMode, debouncedOrigin, debouncedDestination, travelDate, tripRefresh, hasSearched]);
+  }, [passengerId, applicationMode, origin, destination, travelDate, tripRefresh]);
 
   useEffect(() => {
     if (!profile) return;
@@ -406,6 +406,34 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
     return () => { active = false; };
   }, [applicationMode]);
 
+  const availableRoutes = useMemo(() => {
+    const routeById = new Map<number, Route>();
+    for (const trip of trips) {
+      if (!routeById.has(trip.routeId)) {
+        routeById.set(trip.routeId, {
+          id: trip.routeId,
+          routeCode: trip.routeCode,
+          origin: trip.origin,
+          destination: trip.destination,
+        });
+      }
+    }
+    return [...routeById.values()];
+  }, [trips]);
+  const selectedRouteTrips = useMemo(
+    () => trips.filter((trip) => trip.routeId === selectedRouteId),
+    [trips, selectedRouteId],
+  );
+
+  useEffect(() => {
+    if (selectedRouteId !== null && !availableRoutes.some((route) => route.id === selectedRouteId)) {
+      setSelectedRouteId(null);
+    }
+    if (selectedTripId !== null && !selectedRouteTrips.some((trip) => trip.tripId === selectedTripId)) {
+      setSelectedTripId(null);
+    }
+  }, [availableRoutes, selectedRouteId, selectedRouteTrips, selectedTripId]);
+
   const upcomingBookings = useMemo(() => bookings.filter((booking) => new Date(booking.departureTime).getTime() > Date.now()), [bookings]);
   const pastBookings = useMemo(() => bookings.filter((booking) => new Date(booking.departureTime).getTime() <= Date.now()), [bookings]);
   const completedBookings = bookings.filter((booking) => booking.tripStatus === 'completed' && booking.bookingStatus !== 'cancelled');
@@ -425,15 +453,49 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
     setProfile(null);
     setBookings([]);
     setTrips([]);
-    setHasSearched(false);
+    setSelectedRouteId(null);
+    setSelectedTripId(null);
+    setTripsError(null);
     setToast(null);
     setPageError(null);
     setSubmittedFeedbackTrips([]);
     setPaymentConfirmation(null);
   };
 
+  const clearTripSelection = () => {
+    setSelectedRouteId(null);
+    setSelectedTripId(null);
+    setBookingDialogTrip(null);
+    setTrips([]);
+    setTripsError(null);
+  };
+
+  const changeOrigin = (value: string) => {
+    setOrigin(value);
+    clearTripSelection();
+  };
+
+  const changeDestination = (value: string) => {
+    setDestination(value);
+    clearTripSelection();
+  };
+
+  const changeTravelDate = (value: string) => {
+    setTravelDate(value);
+    clearTripSelection();
+  };
+
   const openBooking = (trip: PassengerTrip) => {
     if (!passengerId) { setToast({ kind: 'error', text: 'Select or enter your passenger profile first.' }); return; }
+    if (!origin.trim() || !destination.trim() || !isValidDateOnly(travelDate)
+      || selectedRouteId !== trip.routeId || selectedTripId !== trip.tripId
+      || trip.origin.trim().toLowerCase() !== origin.trim().toLowerCase()
+      || trip.destination.trim().toLowerCase() !== destination.trim().toLowerCase()
+      || dateKey(trip.departureTime) < travelDate
+      || !selectedRouteTrips.some((selectedTrip) => selectedTrip.tripId === trip.tripId)) {
+      setToast({ kind: 'error', text: 'Select an origin, destination, travel date, route, and trip before booking.' });
+      return;
+    }
     setSeatNumber('');
     setSeatError('');
     setBookingDialogTrip(trip);
@@ -442,6 +504,16 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
   const bookTrip = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!bookingDialogTrip) return;
+    if (!origin.trim() || !destination.trim() || !isValidDateOnly(travelDate)
+      || selectedRouteId !== bookingDialogTrip.routeId || selectedTripId !== bookingDialogTrip.tripId
+      || bookingDialogTrip.origin.trim().toLowerCase() !== origin.trim().toLowerCase()
+      || bookingDialogTrip.destination.trim().toLowerCase() !== destination.trim().toLowerCase()
+      || dateKey(bookingDialogTrip.departureTime) < travelDate
+      || !selectedRouteTrips.some((trip) => trip.tripId === bookingDialogTrip.tripId)) {
+      setBookingDialogTrip(null);
+      setToast({ kind: 'error', text: 'Select an origin, destination, travel date, route, and trip before booking.' });
+      return;
+    }
     const seat = Number(seatNumber);
     if (!/^\d+$/.test(seatNumber) || !Number.isInteger(seat) || seat < 1 || seat > bookingDialogTrip.totalSeats) {
       setSeatError(`Enter a whole seat number from 1 to ${bookingDialogTrip.totalSeats}.`);
@@ -861,11 +933,12 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900">Find a trip</h2>
-                <p className="text-xs text-slate-500">Filter upcoming scheduled bus services by origin, destination, or date.</p>
+                <p className="text-xs text-slate-500">Filter upcoming available services by origin, destination, and travel date.</p>
               </div>
               <button
                 type="button"
-                onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }}
+                onClick={() => { changeOrigin(''); changeDestination(''); changeTravelDate(''); }}
+                disabled={!origin && !destination && !travelDate}
                 className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 Clear filters
@@ -878,7 +951,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
                 <span>Origin</span>
                 <SearchableDropdown
                   value={origin}
-                  onChange={setOrigin}
+                  onChange={changeOrigin}
                   options={Array.from(new Set(routes.map((r) => r.origin))).map(o => ({ value: o, label: o }))}
                   placeholder="All origins"
                   ariaLabel="Origin"
@@ -889,7 +962,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
                 <span>Destination</span>
                 <SearchableDropdown
                   value={destination}
-                  onChange={setDestination}
+                  onChange={changeDestination}
                   options={Array.from(new Set(routes.map((r) => r.destination))).map(d => ({ value: d, label: d }))}
                   placeholder="All destinations"
                   ariaLabel="Destination"
@@ -901,75 +974,65 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
                 <input
                   type="date"
                   value={travelDate}
-                  onChange={(e) => setTravelDate(e.target.value)}
+                  onChange={(e) => changeTravelDate(e.target.value)}
                   className={inputClass}
                   aria-label="Trip date"
                 />
               </label>
             </div>
 
-            <div className="flex items-center justify-start">
-              <button
-                type="button"
-                onClick={() => setHasSearched(true)}
-                className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-bold text-white shadow-2xs hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <Search size={14} />
-                Search trips
-              </button>
-            </div>
-
-            {tripsLoading ? (
+            {!origin.trim() || !destination.trim() || !isValidDateOnly(travelDate) ? (
+              <EmptyState icon={<MapPin size={24} />} message="Please select an origin, destination, and travel date." />
+            ) : !passengerId ? (
+              <EmptyState icon={<UserCheck size={24} />} title="Select a Passenger" message="Select a passenger profile from the top bar to view available trips." />
+            ) : tripsLoading ? (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" aria-label="Loading trips">
                 {[0, 1, 2].map((i) => <SkeletonCard key={i} />)}
               </div>
-            ) : !passengerId ? (
-              <EmptyState icon={<UserCheck size={24} />} title="Select a Passenger" message="Select a passenger profile from the top bar to view available trips." />
+            ) : tripsError ? (
+              <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs font-semibold text-rose-800">{tripsError}</div>
             ) : trips.length === 0 ? (
-              <EmptyState
-                icon={<MapPin size={24} />}
-                title="No Trips Found"
-                message={travelDate ? `No scheduled services found for ${new Date(travelDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}.` : 'No upcoming trips match your current filters.'}
-                action={
-                  <div className="space-y-3">
-                    {travelDate && availableDates.length > 0 && (
-                      <div>
-                        <p className="text-xs text-slate-500 mb-1.5 font-medium">Trips available on alternate dates:</p>
-                        <div className="flex flex-wrap justify-center gap-1.5">
-                          {availableDates.slice(0, 5).map((d) => (
-                            <button
-                              key={d}
-                              type="button"
-                              onClick={() => { setTravelDate(d); setHasSearched(true); }}
-                              className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-                            >
-                              {new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => { setOrigin(''); setDestination(''); setTravelDate(''); setHasSearched(false); }}
-                      className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                    >
-                      Clear all filters
-                    </button>
-                  </div>
-                }
-              />
+              <EmptyState icon={<MapPin size={24} />} title="No Available Trips" message="No available trips found from this date onward." />
             ) : (
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {trips.map((trip) => {
+              <div className="space-y-5">
+                <section aria-label="Available routes" className="space-y-3">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">Available routes ({availableRoutes.length})</h3>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {availableRoutes.map((route) => {
+                      const selected = selectedRouteId === route.id;
+                      const scheduleCount = trips.filter((trip) => trip.routeId === route.id).length;
+                      return (
+                        <button
+                          key={route.id}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => { setSelectedRouteId(route.id); setSelectedTripId(null); }}
+                          className={`rounded-xl border p-4 text-left shadow-2xs transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${selected ? 'border-blue-700 bg-blue-50' : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-slate-50'}`}
+                        >
+                          <span className="text-xs font-bold text-blue-700">{route.routeCode}</span>
+                          <span className="mt-1 block font-semibold text-slate-900">{route.origin} <ArrowRight size={14} className="mx-1 inline text-blue-700" /> {route.destination}</span>
+                          <span className="mt-2 block text-xs text-slate-500">{scheduleCount} {scheduleCount === 1 ? 'available trip' : 'available trips'}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {selectedRouteId === null ? (
+                  <EmptyState icon={<MapPin size={24} />} message="Select a route to view its available trips." />
+                ) : (
+                  <>
+                    <section aria-label="Available trips for selected route" className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {selectedRouteTrips.map((trip) => {
                   const capacity = Math.max(1, Number(trip.totalSeats));
                   const seatRatio = Math.max(0, Math.min(100, (Number(trip.availableSeats) / capacity) * 100));
                   const lowSeats = Number(trip.availableSeats) <= 3;
                   const isFull = Number(trip.availableSeats) === 0;
+                  const selected = selectedTripId === trip.tripId;
                   const duration = tripDuration(trip.departureTime, trip.arrivalTime);
 
                   return (
-                    <article key={trip.tripId} className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 shadow-2xs transition-all duration-200 hover:shadow-xs">
+                    <article key={trip.tripId} className={`flex flex-col justify-between rounded-xl border p-5 shadow-2xs transition-all duration-200 hover:shadow-xs ${selected ? 'border-blue-700 bg-blue-50' : 'border-slate-200 bg-white'}`}>
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-700">{trip.routeCode}</span>
@@ -1007,20 +1070,37 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => openBooking(trip)}
+                          onClick={() => setSelectedTripId(trip.tripId)}
                           disabled={isFull}
+                          aria-pressed={selected}
                           className={`rounded-lg px-4 py-2 text-xs font-bold transition-all shadow-2xs focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                             isFull
                               ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
-                              : 'bg-blue-700 text-white hover:bg-blue-800'
+                              : selected ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-blue-700 text-white hover:bg-blue-800'
                           }`}
                         >
-                          {isFull ? 'Fully Booked' : 'Book Seat'}
+                          {isFull ? 'Fully Booked' : selected ? 'Trip selected' : 'Select trip'}
                         </button>
                       </div>
                     </article>
                   );
                 })}
+                    </section>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const trip = selectedRouteTrips.find((item) => item.tripId === selectedTripId);
+                          if (trip) openBooking(trip);
+                        }}
+                        disabled={!selectedTripId || !selectedRouteTrips.some((trip) => trip.tripId === selectedTripId)}
+                        className="rounded-lg bg-blue-700 px-5 py-2.5 text-xs font-bold text-white shadow-2xs hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Continue to booking
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </section>

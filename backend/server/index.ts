@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import app from './app.js';
+import { mongodbHealth } from './mongodbAdapter.js';
 
 const port = Number(process.env.PORT ?? 3001);
 const host = process.env.HOST ?? '0.0.0.0';
@@ -8,6 +9,11 @@ const server = app.listen(port, host, () => {
   console.log(`SmartMove API listening on http://localhost:${port}`);
   console.log(`Database mode: ${process.env.DATABASE_MODE ?? 'demo'}`);
   console.log(`Listening on ${host}:${port}`);
+  void mongodbHealth().then((health) => {
+    const uri = process.env.MONGODB_URI ? 'configured' : 'missing';
+    const database = process.env.MONGODB_DATABASE ? 'configured' : 'missing';
+    console.log(`MongoDB startup check: URI ${uri}, database ${database}, collections vehicle_documents, passenger_feedback, announcements, trip_media, connection ${health.connected ? 'healthy' : 'unavailable'}.`);
+  });
 });
 
 server.on('error', (error: Error) => {

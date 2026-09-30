@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Eye, Image as ImageIcon, Plus, X } from 'lucide-react';
+import { Check, Eye, FileText, Image as ImageIcon, Pencil, Plus, Trash2, X } from 'lucide-react';
 import Modal from '../components/Modal';
 import SearchBar from '../components/SearchBar';
-import { API_BASE_URL, ApiError, apiGet, apiPatch, apiPost } from '../services/api';
+import { API_BASE_URL, ApiError, apiDelete, apiGet, apiPatch, apiPost } from '../services/api';
 
 type FeedbackDetails = { rating: string; passenger: string; feedbackType: string; status: string; route: string; trip: string; vehicle: string; driver: string; createdAt: string };
-type ContentItem = { id: string; title: string; detail: string; meta: string; type: string; feedback?: FeedbackDetails };
+type ContentItem = { id: string; title: string; detail: string; meta: string; type: string; feedback?: FeedbackDetails; documentId?: string; document?: Record<string, unknown> };
 type TripMediaItem = {
   id: string;
   title: string;
@@ -37,6 +37,7 @@ type AnnouncementDraft = {
   routeId: string;
   tripId: string;
 };
+type VehicleDocumentDraft = { vehicleId: string; registration: string; documentType: string; fileUrl: string; expiresOn: string };
 type MongoContent = {
   demo: boolean;
   reviews: Array<Record<string, unknown>>;
@@ -85,8 +86,10 @@ const loadMongoContent = async (includeInactive: boolean): Promise<LoadedContent
     id: `document-${value(item, '_id', 'id') || index}`,
     title: `${value(item, 'registration', 'registrationNumber') || `Vehicle #${value(item, 'vehicleId')}`} · ${value(item, 'documentType') || 'Document'}`,
     detail: value(item, 'fileUrl') || 'Document record',
-    meta: value(item, 'expiresOn', 'expiresAt') ? `Expires ${value(item, 'expiresOn', 'expiresAt')}` : 'Expiry date unavailable',
+    meta: [`Vehicle #${value(item, 'vehicleId')}`, value(item, 'expiresOn', 'expiresAt') ? `Expires ${value(item, 'expiresOn', 'expiresAt').slice(0, 10)}` : 'No expiry date'].join(' · '),
     type: 'documents',
+    documentId: value(item, '_id', 'id') || undefined,
+    document: item,
   }));
   const media = content.media.map((item, index) => ({
     id: `media-${value(item, '_id', 'id') || index}`,
@@ -126,6 +129,7 @@ const today = () => {
 const emptyAnnouncement = (): AnnouncementDraft => ({
   title: '', message: '', audience: 'all', startDate: today(), endDate: '', priority: 'normal', status: 'published', routeId: '', tripId: '',
 });
+const emptyVehicleDocument = (): VehicleDocumentDraft => ({ vehicleId: '', registration: '', documentType: '', fileUrl: '', expiresOn: '' });
 
 const value = (record: Record<string, unknown>, ...keys: string[]) => {
   for (const key of keys) if (record[key] !== undefined && record[key] !== null) return String(record[key]);
@@ -156,6 +160,12 @@ const MongoDBContent: React.FC<{ role: 'admin' | 'passenger' | 'driver'; searchV
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [announcement, setAnnouncement] = useState<AnnouncementDraft>(emptyAnnouncement);
   const [saving, setSaving] = useState(false);
+  const [documentOpen, setDocumentOpen] = useState(false);
+  const [documentDraft, setDocumentDraft] = useState<VehicleDocumentDraft>(emptyVehicleDocument);
+  const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null);
+  const [savingDocument, setSavingDocument] = useState(false);
+  const [pendingDeleteDocument, setPendingDeleteDocument] = useState<ContentItem | null>(null);
+  const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const search = searchValue ?? localSearch;
   const setSearch = onSearchValueChange ?? setLocalSearch;
@@ -206,6 +216,78 @@ const MongoDBContent: React.FC<{ role: 'admin' | 'passenger' | 'driver'; searchV
     }
   };
 
+  const editVehicleDocument = (item?: ContentItem) => {
+    setEditingDocumentId(item?.documentId ?? null);
+    setDocumentDraft(item?.document ? {
+      vehicleId: value(item.document, 'vehicleId'),
+      registration: value(item.document, 'registration', 'registrationNumber'),
+      documentType: value(item.document, 'documentType'),
+      fileUrl: value(item.document, 'fileUrl'),
+      expiresOn: value(item.document, 'expiresOn').slice(0, 10),
+    } : emptyVehicleDocument());
+    setDocumentOpen(true);
+    setToast(null);
+  };
+
+  const saveVehicleDocument = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSavingDocument(true);
+    setToast(null);
+    const payload = {
+      vehicleId: Number(documentDraft.vehicleId),
+      registration: documentDraft.registration.trim(),
+      documentType: documentDraft.documentType.trim(),
+      fileUrl: documentDraft.fileUrl.trim(),
+      expiresOn: documentDraft.expiresOn || undefined,
+    };
+    try {
+      if (editingDocumentId) await apiPatch(`/mongodb/documents/${encodeURIComponent(editingDocumentId)}`, payload);
+      else await apiPost('/mongodb/documents', payload);
+      setDocumentOpen(false);
+      setDocumentDraft(emptyVehicleDocument());
+      setEditingDocumentId(null);
+      setToast({ kind: 'success', message: editingDocumentId ? 'Vehicle document updated.' : 'Vehicle document saved.' });
+      try {
+        const refreshed = await loadMongoContent(true);
+        setItems(refreshed.items);
+        setTripMedia(refreshed.media);
+        setSource(refreshed.source);
+        setError(null);
+      } catch {
+        setError(new Error('The vehicle document was saved, but the content list could not be refreshed. Reload to see it.'));
+      }
+    } catch (saveError) {
+      setToast({ kind: 'error', message: saveError instanceof Error ? saveError.message : 'Vehicle document could not be saved.' });
+    } finally {
+      setSavingDocument(false);
+    }
+  };
+
+  const deleteVehicleDocument = async () => {
+    if (!pendingDeleteDocument?.documentId) return;
+    const documentId = pendingDeleteDocument.documentId;
+    setDeletingDocumentId(documentId);
+    setToast(null);
+    try {
+      await apiDelete(`/mongodb/documents/${encodeURIComponent(documentId)}`);
+      setPendingDeleteDocument(null);
+      setToast({ kind: 'success', message: 'Vehicle document deleted.' });
+      try {
+        const refreshed = await loadMongoContent(true);
+        setItems(refreshed.items);
+        setTripMedia(refreshed.media);
+        setSource(refreshed.source);
+        setError(null);
+      } catch {
+        setError(new Error('The vehicle document was deleted, but the content list could not be refreshed. Reload to see the latest list.'));
+      }
+    } catch (deleteError) {
+      setToast({ kind: 'error', message: deleteError instanceof Error ? deleteError.message : 'Vehicle document could not be deleted.' });
+    } finally {
+      setDeletingDocumentId(null);
+    }
+  };
+
   const moderateMedia = async (media: TripMediaItem, status: 'approved' | 'rejected') => {
     setModeratingMediaId(media.id);
     setToast(null);
@@ -243,7 +325,7 @@ const MongoDBContent: React.FC<{ role: 'admin' | 'passenger' | 'driver'; searchV
         <div><h2 className="text-2xl font-bold text-gray-900">MongoDB Content</h2><p className="mt-1 text-sm text-gray-600">Reviews, announcements, vehicle documents, and trip media.</p></div>
         <div className="flex items-center justify-between gap-3 sm:justify-end">
           <span role="status" className={`text-sm font-medium ${source === 'mongodb' ? 'text-emerald-700' : source === 'demo' ? 'text-amber-700' : 'text-gray-500'}`}>{sourceLabel}</span>
-          {role === 'admin' && <button type="button" onClick={() => { setAnnouncement(emptyAnnouncement()); setAnnouncementOpen(true); }} className="inline-flex shrink-0 items-center gap-2 rounded-md bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900"><Plus size={16} />Add Announcement</button>}
+          {role === 'admin' && <div className="flex flex-wrap gap-2"><button type="button" onClick={() => editVehicleDocument()} className="inline-flex shrink-0 items-center gap-2 rounded-md border border-blue-800 px-3 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-50"><FileText size={16} />Add Vehicle Document</button><button type="button" onClick={() => { setAnnouncement(emptyAnnouncement()); setAnnouncementOpen(true); }} className="inline-flex shrink-0 items-center gap-2 rounded-md bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900"><Plus size={16} />Add Announcement</button></div>}
         </div>
       </div>
       {toast && <div role={toast.kind === 'error' ? 'alert' : 'status'} className={`rounded border p-3 text-sm ${toast.kind === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>{toast.message}</div>}
@@ -275,7 +357,7 @@ const MongoDBContent: React.FC<{ role: 'admin' | 'passenger' | 'driver'; searchV
         </article>)}</div>}
       </section>}
       {!loading && !error && filtered.length === 0 && !showTripMedia && <div className="border-t border-gray-200 py-10 text-center text-sm text-gray-500">No content matches this search and filter.</div>}
-      {filtered.length > 0 && <div className="grid gap-3 md:grid-cols-2">{filtered.map((item) => <article key={item.id} className="rounded border border-gray-200 bg-white p-4"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold uppercase text-blue-800">{item.type}</span><span className="text-xs text-gray-500">{source === 'mongodb' ? 'Live record' : 'Demo record'}</span></div><h3 className="font-semibold text-gray-900">{item.title}</h3><p className="mt-2 break-words text-sm text-gray-600">{item.detail || 'No additional detail.'}</p>{item.feedback && <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-gray-100 pt-3 text-xs">{[
+      {filtered.length > 0 && <div className="grid gap-3 md:grid-cols-2">{filtered.map((item) => <article key={item.id} className="rounded border border-gray-200 bg-white p-4"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold uppercase text-blue-800">{item.type}</span><span className="text-xs text-gray-500">{source === 'mongodb' ? 'Live record' : 'Demo record'}</span></div><h3 className="font-semibold text-gray-900">{item.title}</h3><p className="mt-2 break-words text-sm text-gray-600">{item.detail || 'No additional detail.'}</p>{item.type === 'documents' && role === 'admin' && source === 'mongodb' && item.documentId && <div className="mt-3 flex justify-end gap-2 border-t border-gray-100 pt-3"><button type="button" aria-label={`Edit vehicle document ${item.title}`} onClick={() => editVehicleDocument(item)} className="inline-flex items-center gap-1 rounded border border-gray-300 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"><Pencil size={14} />Edit</button><button type="button" aria-label={`Delete vehicle document ${item.title}`} onClick={() => setPendingDeleteDocument(item)} className="inline-flex items-center gap-1 rounded border border-rose-300 px-2.5 py-1.5 text-xs font-semibold text-rose-800 hover:bg-rose-50"><Trash2 size={14} />Delete</button></div>}{item.feedback && <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-gray-100 pt-3 text-xs">{[
         ['Rating', item.feedback.rating], ['Passenger', item.feedback.passenger], ['Type', item.feedback.feedbackType], ['Status', item.feedback.status],
         ['Route', item.feedback.route], ['Trip', item.feedback.trip], ['Vehicle', item.feedback.vehicle], ['Driver', item.feedback.driver],
         ['Created', item.feedback.createdAt === 'Date unavailable' ? item.feedback.createdAt : new Date(item.feedback.createdAt).toLocaleString()],
@@ -302,6 +384,21 @@ const MongoDBContent: React.FC<{ role: 'admin' | 'passenger' | 'driver'; searchV
             <button type="submit" disabled={saving} className="rounded-md bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:opacity-50">{saving ? 'Saving…' : 'Publish Announcement'}</button>
           </div>
         </form>
+      </Modal>
+      <Modal isOpen={documentOpen} onClose={() => { if (!savingDocument) setDocumentOpen(false); }} title={editingDocumentId ? 'Edit vehicle document' : 'Add vehicle document'} size="md">
+        <form className="space-y-4" onSubmit={(event) => void saveVehicleDocument(event)}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div><label htmlFor="vehicle-document-id" className="mb-1 block text-sm font-medium text-gray-700">Vehicle ID</label><input id="vehicle-document-id" type="number" min="1" step="1" required value={documentDraft.vehicleId} onChange={(event) => setDocumentDraft({ ...documentDraft, vehicleId: event.target.value })} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" /></div>
+            <div><label htmlFor="vehicle-document-registration" className="mb-1 block text-sm font-medium text-gray-700">Registration</label><input id="vehicle-document-registration" maxLength={30} required value={documentDraft.registration} onChange={(event) => setDocumentDraft({ ...documentDraft, registration: event.target.value })} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" /></div>
+            <div><label htmlFor="vehicle-document-type" className="mb-1 block text-sm font-medium text-gray-700">Document type</label><input id="vehicle-document-type" maxLength={60} required placeholder="Insurance, registration, inspection" value={documentDraft.documentType} onChange={(event) => setDocumentDraft({ ...documentDraft, documentType: event.target.value })} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" /></div>
+            <div><label htmlFor="vehicle-document-expiry" className="mb-1 block text-sm font-medium text-gray-700">Expiry date</label><input id="vehicle-document-expiry" type="date" value={documentDraft.expiresOn} onChange={(event) => setDocumentDraft({ ...documentDraft, expiresOn: event.target.value })} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" /></div>
+            <div className="sm:col-span-2"><label htmlFor="vehicle-document-url" className="mb-1 block text-sm font-medium text-gray-700">Document URL or path</label><input id="vehicle-document-url" type="text" maxLength={2048} required value={documentDraft.fileUrl} onChange={(event) => setDocumentDraft({ ...documentDraft, fileUrl: event.target.value })} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" /></div>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-gray-200 pt-4"><button type="button" disabled={savingDocument} onClick={() => setDocumentOpen(false)} className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancel</button><button type="submit" disabled={savingDocument} className="inline-flex items-center gap-2 rounded-md bg-blue-800 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-900 disabled:opacity-50">{savingDocument ? 'Saving…' : editingDocumentId ? 'Save changes' : 'Save document'}</button></div>
+        </form>
+      </Modal>
+      <Modal isOpen={Boolean(pendingDeleteDocument)} onClose={() => { if (!deletingDocumentId) setPendingDeleteDocument(null); }} title="Delete vehicle document?" size="sm">
+        <div className="space-y-4"><p className="text-sm text-gray-700">Delete {pendingDeleteDocument?.title ?? 'this vehicle document'} from MongoDB?</p><div className="flex justify-end gap-2 border-t border-gray-200 pt-4"><button type="button" disabled={Boolean(deletingDocumentId)} onClick={() => setPendingDeleteDocument(null)} className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancel</button><button type="button" disabled={Boolean(deletingDocumentId)} onClick={() => void deleteVehicleDocument()} className="rounded-md bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800 disabled:opacity-50">{deletingDocumentId ? 'Deleting…' : 'Delete document'}</button></div></div>
       </Modal>
     </div>
   );

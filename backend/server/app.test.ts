@@ -37,6 +37,9 @@ const mongoMocks = vi.hoisted(() => ({
   reviews: vi.fn(),
   createAnnouncement: vi.fn(),
   createPassengerReview: vi.fn(),
+  createVehicleDocument: vi.fn(),
+  updateVehicleDocument: vi.fn(),
+  deleteVehicleDocument: vi.fn(),
   createTripMedia: vi.fn(),
   tripMediaImage: vi.fn(),
   updateTripMediaStatus: vi.fn(),
@@ -77,6 +80,9 @@ vi.mock('./mongodbAdapter.js', () => ({
   mongodbContent: mongoMocks.content,
   mongodbCreateAnnouncement: mongoMocks.createAnnouncement,
   mongodbCreatePassengerReview: mongoMocks.createPassengerReview,
+  mongodbCreateVehicleDocument: mongoMocks.createVehicleDocument,
+  mongodbUpdateVehicleDocument: mongoMocks.updateVehicleDocument,
+  mongodbDeleteVehicleDocument: mongoMocks.deleteVehicleDocument,
   mongodbCreateTripMedia: mongoMocks.createTripMedia,
   mongodbTripMediaImage: mongoMocks.tripMediaImage,
   mongodbUpdateTripMediaStatus: mongoMocks.updateTripMediaStatus,
@@ -183,6 +189,57 @@ describe('SmartMove backend API', () => {
     expect(response.body.demo).toBe(true);
     expect(response.body.reviews.length).toBeGreaterThan(0);
     expect(response.body.media[0]).toMatchObject({ status: 'approved', visibility: 'public', tripName: expect.any(String), routeName: expect.any(String) });
+  });
+
+  it('serves MongoDB feedback when Oracle trip-media enrichment is unavailable', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    const savedReview = { _id: 'review-live', passengerName: 'Passenger One', comment: 'A saved review' };
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    mongoMocks.content.mockResolvedValue({ reviews: [savedReview], announcements: [], documents: [], media: [{ tripId: 8, driverId: 2, caption: 'Trip photo' }] });
+    oracleMocks.list.mockRejectedValue(new Error('Oracle unavailable'));
+
+    const response = await request(app).get('/api/mongodb/content');
+
+    expect(response.status).toBe(200);
+    expect(response.body.reviews).toContainEqual(savedReview);
+    expect(response.body.media[0]).toMatchObject({ tripName: 'Trip #8', routeName: 'Route unavailable' });
+  });
+
+  it('creates, updates, and deletes vehicle documents through the MongoDB collection', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    const payload = { vehicleId: '1', registration: ' WP-CAB-1234 ', documentType: 'insurance', fileUrl: '/docs/insurance.pdf', expiresOn: '2027-12-31' };
+    const saved = { ...payload, vehicleId: 1, registration: 'WP-CAB-1234', _id: '507f1f77bcf86cd799439011' };
+    mongoMocks.createVehicleDocument.mockResolvedValue(saved);
+    mongoMocks.updateVehicleDocument.mockResolvedValue({ ...saved, documentType: 'registration' });
+    mongoMocks.deleteVehicleDocument.mockResolvedValue(true);
+
+    const created = await request(app).post('/api/mongodb/documents').send(payload);
+    const updated = await request(app).patch(`/api/mongodb/documents/${saved._id}`).send({ ...payload, documentType: 'registration' });
+    const deleted = await request(app).delete(`/api/mongodb/documents/${saved._id}`);
+
+    expect(created.status).toBe(201);
+    expect(created.body).toEqual(saved);
+    expect(mongoMocks.createVehicleDocument).toHaveBeenCalledWith({ vehicleId: 1, registration: 'WP-CAB-1234', documentType: 'insurance', fileUrl: '/docs/insurance.pdf', expiresOn: '2027-12-31' });
+    expect(updated.status).toBe(200);
+    expect(mongoMocks.updateVehicleDocument).toHaveBeenCalledWith(saved._id, expect.objectContaining({ documentType: 'registration' }));
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toEqual({ success: true, id: saved._id });
+  });
+
+  it('validates vehicle document inputs and refuses writes when MongoDB is unavailable', async () => {
+    const invalid = await request(app).post('/api/mongodb/documents').send({ vehicleId: 0, registration: '', documentType: '', fileUrl: '' });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toBe('vehicleId must be a positive integer.');
+    const invalidDate = await request(app).post('/api/mongodb/documents').send({ vehicleId: 1, registration: 'WP-CAB-1234', documentType: 'insurance', fileUrl: '/docs/insurance.pdf', expiresOn: '2027-02-30' });
+    expect(invalidDate.status).toBe(400);
+    expect(invalidDate.body.error).toBe('expiresOn must be a valid date in YYYY-MM-DD format.');
+
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: false, mode: 'demo', message: 'MongoDB is unavailable' });
+    const unavailable = await request(app).post('/api/mongodb/documents').send({ vehicleId: 1, registration: 'WP-CAB-1234', documentType: 'insurance', fileUrl: '/docs/insurance.pdf' });
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.body.error).toContain('MongoDB is unavailable');
+    expect(mongoMocks.createVehicleDocument).not.toHaveBeenCalled();
   });
 
   it('uploads trip images only for the assigned driver and serves the saved image', async () => {

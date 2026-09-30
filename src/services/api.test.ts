@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, API_BASE_URL, apiGet, apiPost } from './api';
+import { ApiError, API_BASE_URL, apiDelete, apiGet, apiPost } from './api';
 
 const fetchMock = vi.fn();
 
@@ -44,5 +44,14 @@ describe('API service', () => {
       status: 0,
       technicalMessage: 'Failed to fetch',
     } satisfies Partial<ApiError>);
+  });
+
+  it('sends DELETE requests to the configured API', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiDelete('/mongodb/documents/document-1')).resolves.toEqual({ success: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/mongodb/documents/document-1`, { method: 'DELETE' });
   });
 });

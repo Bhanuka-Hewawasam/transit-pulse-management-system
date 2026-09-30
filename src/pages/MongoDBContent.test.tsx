@@ -5,17 +5,41 @@ import MongoDBContent from './MongoDBContent';
 const announcements: Record<string, unknown>[] = [];
 const mediaRecords: Record<string, unknown>[] = [];
 const feedbackRecords: Record<string, unknown>[] = [];
+const documentRecords: Record<string, unknown>[] = [];
+let failNextDocumentSave = false;
+let mongoContentLive = false;
 const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
   if (init?.method === 'PATCH') {
-    const payload = JSON.parse(String(init.body)) as { status: string };
     const url = String(_input);
+    const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+    if (url.includes('/mongodb/documents/')) {
+      const documentId = url.split('/').at(-1);
+      const document = documentRecords.find((item) => item._id === documentId);
+      if (document) Object.assign(document, payload);
+      return { ok: Boolean(document), json: async () => document ?? { error: 'Not found' } } as Response;
+    }
     const mediaId = url.split('/').at(-2);
     const media = mediaRecords.find((item) => item.id === mediaId);
     if (media) Object.assign(media, payload, { visibility: payload.status === 'approved' ? 'public' : 'hidden' });
     return { ok: Boolean(media), json: async () => media ?? { error: 'Not found' } } as Response;
   }
+  if (init?.method === 'DELETE') {
+    const documentId = String(_input).split('/').at(-1);
+    const index = documentRecords.findIndex((item) => item._id === documentId);
+    if (index >= 0) documentRecords.splice(index, 1);
+    return { ok: index >= 0, json: async () => ({ success: index >= 0 }) } as Response;
+  }
   if (init?.method === 'POST') {
     const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+    if (String(_input).endsWith('/mongodb/documents')) {
+      if (failNextDocumentSave) {
+        failNextDocumentSave = false;
+        return { ok: false, status: 503, json: async () => ({ error: 'MongoDB is unavailable; the vehicle document could not be saved.' }) } as Response;
+      }
+      const saved = { ...payload, _id: `document-${documentRecords.length + 1}` };
+      documentRecords.push(saved);
+      return { ok: true, json: async () => saved } as Response;
+    }
     const saved = { ...payload, id: `announcement-${announcements.length + 1}` };
     announcements.push(saved);
     return { ok: true, json: async () => saved } as Response;
@@ -25,13 +49,16 @@ const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
   }
   return {
     ok: true,
-    json: async () => ({ demo: true, reviews: [], announcements: [...announcements], documents: [], media: mediaRecords }),
+    json: async () => ({ demo: !mongoContentLive, reviews: [], announcements: [...announcements], documents: [...documentRecords], media: mediaRecords }),
   } as Response;
 });
 
 beforeEach(() => {
   announcements.length = 0;
   feedbackRecords.length = 0;
+  failNextDocumentSave = false;
+  mongoContentLive = false;
+  documentRecords.splice(0, documentRecords.length, { _id: 'document-existing', vehicleId: 1, registration: 'WP-CAB-1234', documentType: 'registration', fileUrl: '/docs/registration.pdf', expiresOn: '2027-12-31' });
   mediaRecords.splice(0, mediaRecords.length,
     { id: 'media-pending', type: 'photo', title: 'Trip arrival photo', caption: 'Bus at terminal', tripId: 18, tripName: 'R018 · Colombo to Kandy', routeId: 4, routeName: 'R018 · Colombo to Kandy', vehicleNumber: 'WP-ABC-1234', driverName: 'Sunil Fernando', createdAt: '2026-09-29T10:00:00.000Z', uploadedBy: 'driver:3', status: 'pending', visibility: 'hidden', url: '/api/mongodb/media/media-pending/image' },
     { id: 'media-approved', type: 'photo', title: 'Departure bay', tripId: 18, tripName: 'R018 · Colombo to Kandy', routeId: 4, routeName: 'R018 · Colombo to Kandy', vehicleNumber: 'WP-ABC-1234', driverName: 'Sunil Fernando', createdAt: '2026-09-28T10:00:00.000Z', uploadedBy: 'driver:3', status: 'approved', visibility: 'public', mediaType: 'photo' },
@@ -43,7 +70,7 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('MongoDB content announcements', () => {
+describe('MongoDB content and document management', () => {
   it('shows announcement creation only to admins', async () => {
     render(<MongoDBContent role="passenger" />);
 
@@ -119,5 +146,53 @@ describe('MongoDB content announcements', () => {
     expect(cards[0]).toHaveTextContent('Driver3');
     expect(cards[1]).toHaveTextContent('Older Passenger');
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/mongodb/feedback'), undefined);
+  });
+
+  it('creates, updates, and deletes vehicle documents and refreshes the list', async () => {
+    mongoContentLive = true;
+    render(<MongoDBContent role="admin" />);
+    expect(await screen.findByText('WP-CAB-1234 · registration')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Vehicle Document' }));
+    fireEvent.change(screen.getByLabelText('Vehicle ID'), { target: { value: '4' } });
+    fireEvent.change(screen.getByLabelText('Registration'), { target: { value: 'SP-KLM-3456' } });
+    fireEvent.change(screen.getByLabelText('Document type'), { target: { value: 'inspection' } });
+    fireEvent.change(screen.getByLabelText('Expiry date'), { target: { value: '2028-10-15' } });
+    fireEvent.change(screen.getByLabelText('Document URL or path'), { target: { value: '/docs/inspection.pdf' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save document' }));
+
+    expect(await screen.findByText('SP-KLM-3456 · inspection')).toBeInTheDocument();
+    expect(documentRecords[1]).toMatchObject({ vehicleId: 4, registration: 'SP-KLM-3456', documentType: 'inspection', fileUrl: '/docs/inspection.pdf', expiresOn: '2028-10-15' });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/mongodb/documents'), expect.objectContaining({ method: 'POST' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit vehicle document SP-KLM-3456 · inspection' }));
+    fireEvent.change(screen.getByLabelText('Document type'), { target: { value: 'insurance' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('SP-KLM-3456 · insurance')).toBeInTheDocument();
+    expect(documentRecords[1].documentType).toBe('insurance');
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/mongodb/documents/document-2'), expect.objectContaining({ method: 'PATCH' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete vehicle document SP-KLM-3456 · insurance' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete document' }));
+
+    await waitFor(() => expect(screen.queryByText('SP-KLM-3456 · insurance')).not.toBeInTheDocument());
+    expect(documentRecords).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/mongodb/documents/document-2'), { method: 'DELETE' });
+  });
+
+  it('shows the MongoDB error instead of claiming an unavailable document save succeeded', async () => {
+    failNextDocumentSave = true;
+    render(<MongoDBContent role="admin" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Vehicle Document' }));
+    fireEvent.change(screen.getByLabelText('Vehicle ID'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Registration'), { target: { value: 'WP-CAB-1234' } });
+    fireEvent.change(screen.getByLabelText('Document type'), { target: { value: 'insurance' } });
+    fireEvent.change(screen.getByLabelText('Document URL or path'), { target: { value: '/docs/insurance.pdf' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save document' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('MongoDB is unavailable; the vehicle document could not be saved.');
+    expect(screen.queryByText('Vehicle document saved.')).not.toBeInTheDocument();
+    expect(documentRecords).toHaveLength(1);
   });
 });

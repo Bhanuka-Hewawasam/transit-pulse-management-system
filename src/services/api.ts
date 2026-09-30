@@ -74,6 +74,10 @@ export function apiPatch<T>(path: string, payload: unknown): Promise<T> {
   });
 }
 
+export function apiDelete<T>(path: string): Promise<T> {
+  return request<T>(path, { method: 'DELETE' });
+}
+
 export const apiEndpoints = {
   vehicles: '/vehicles',
   drivers: '/drivers',

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { database, nextId } from './database.js';
 import { calculateSegmentFare, calculateTotalFare } from '../../src/utils/routeFare.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, PaymentMethod, Route, Trip, Vehicle } from '../../src/types/index.js';
-import { mongodbContent, mongodbCreateAnnouncement, mongodbCreatePassengerReview, mongodbCreateTripMedia, mongodbHealth, mongodbPassengerReviews, mongodbTripMediaImage, mongodbUpdateTripMediaStatus, type PassengerReviewInput, type TravelAnnouncementInput, type TripMediaStatus } from './mongodbAdapter.js';
+import { mongodbContent, mongodbCreateAnnouncement, mongodbCreatePassengerReview, mongodbCreateTripMedia, mongodbCreateVehicleDocument, mongodbDeleteVehicleDocument, mongodbHealth, mongodbPassengerReviews, mongodbTripMediaImage, mongodbUpdateTripMediaStatus, mongodbUpdateVehicleDocument, type PassengerReviewInput, type TravelAnnouncementInput, type TripMediaStatus, type VehicleDocumentInput } from './mongodbAdapter.js';
 import {
   oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookSeats, oraclePassengerBookings, oraclePassengerCancelBooking,
   oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerPayBookings, oraclePassengerProfile, oraclePassengerSearchTrips,
@@ -49,8 +49,10 @@ const demoMongoContent = () => ({
   media: [...database.trips.slice(0, 3).map((trip) => ({ id: `media-${trip.id}`, title: `${trip.routeCode} trip media`, detail: `Photo/video reference for ${trip.origin} to ${trip.destination}`, meta: `${trip.vehicleReg ?? 'Vehicle'} · Demo media` })), ...demoTripMedia],
 });
 const enrichTripMedia = async (media: unknown[]) => {
+  if (media.length === 0) return [];
   const [trips, routes, vehicles, drivers] = process.env.DATABASE_MODE === 'oracle'
     ? await Promise.all([oracleList('trips'), oracleList('routes'), oracleList('vehicles'), oracleList('drivers')])
+      .catch((): [unknown[], unknown[], unknown[], unknown[]] => [[], [], [], []])
     : [database.trips, database.routes, database.vehicles, database.drivers];
   const findById = (items: unknown[], id: unknown) => items.find((item) => typeof item === 'object' && item !== null
     && 'id' in item && Number((item as { id: unknown }).id) === Number(id)) as Record<string, unknown> | undefined;
@@ -167,9 +169,70 @@ app.post('/api/mongodb/announcements', async (request, response) => {
   }
 });
 app.get('/api/mongodb/documents', async (_request, response) => {
-  if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).documents);
-  if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent().documents);
-  return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+  try {
+    if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).documents);
+    if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent().documents);
+    return response.status(503).json({ error: 'MongoDB is unavailable; vehicle documents could not be loaded.' });
+  } catch (error) {
+    console.error('MongoDB vehicle documents query failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return response.status(503).json({ error: 'MongoDB could not load vehicle documents.' });
+  }
+});
+const parseVehicleDocument = (body: Record<string, unknown>): VehicleDocumentInput | string => {
+  const vehicleId = Number(body.vehicleId);
+  const registration = typeof body.registration === 'string' ? body.registration.trim() : '';
+  const documentType = typeof body.documentType === 'string' ? body.documentType.trim() : '';
+  const fileUrl = typeof body.fileUrl === 'string' ? body.fileUrl.trim() : '';
+  if (!Number.isInteger(vehicleId) || vehicleId <= 0) return 'vehicleId must be a positive integer.';
+  if (!registration || registration.length > 30) return 'registration is required and must be 30 characters or fewer.';
+  if (!documentType || documentType.length > 60) return 'documentType is required and must be 60 characters or fewer.';
+  if (!fileUrl || fileUrl.length > 2048) return 'fileUrl is required and must be 2048 characters or fewer.';
+  let expiresOn: string | undefined;
+  if (body.expiresOn !== undefined && body.expiresOn !== null && body.expiresOn !== '') {
+    const expiry = typeof body.expiresOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.expiresOn)
+      ? new Date(`${body.expiresOn}T00:00:00.000Z`)
+      : null;
+    if (!expiry || Number.isNaN(expiry.getTime()) || expiry.toISOString().slice(0, 10) !== body.expiresOn) {
+      return 'expiresOn must be a valid date in YYYY-MM-DD format.';
+    }
+    expiresOn = body.expiresOn;
+  }
+  return { vehicleId, registration, documentType, fileUrl, ...(expiresOn ? { expiresOn } : {}) };
+};
+app.post('/api/mongodb/documents', async (request, response) => {
+  const input = parseVehicleDocument(request.body ?? {});
+  if (typeof input === 'string') return response.status(400).json({ error: input });
+  try {
+    if (!(await mongodbHealth()).connected) return response.status(503).json({ error: 'MongoDB is unavailable; the vehicle document could not be saved.' });
+    return response.status(201).json(await mongodbCreateVehicleDocument(input));
+  } catch (error) {
+    console.error('MongoDB vehicle document insert failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return response.status(500).json({ error: 'The vehicle document could not be saved.' });
+  }
+});
+app.patch('/api/mongodb/documents/:id', async (request, response) => {
+  const input = parseVehicleDocument(request.body ?? {});
+  if (typeof input === 'string') return response.status(400).json({ error: input });
+  try {
+    if (!(await mongodbHealth()).connected) return response.status(503).json({ error: 'MongoDB is unavailable; the vehicle document could not be updated.' });
+    const updated = await mongodbUpdateVehicleDocument(request.params.id, input);
+    if (!updated) return response.status(404).json({ error: 'Vehicle document was not found.' });
+    return response.json(updated);
+  } catch (error) {
+    console.error('MongoDB vehicle document update failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return response.status(500).json({ error: 'The vehicle document could not be updated.' });
+  }
+});
+app.delete('/api/mongodb/documents/:id', async (request, response) => {
+  try {
+    if (!(await mongodbHealth()).connected) return response.status(503).json({ error: 'MongoDB is unavailable; the vehicle document could not be deleted.' });
+    const deleted = await mongodbDeleteVehicleDocument(request.params.id);
+    if (!deleted) return response.status(404).json({ error: 'Vehicle document was not found.' });
+    return response.json({ success: true, id: request.params.id });
+  } catch (error) {
+    console.error('MongoDB vehicle document delete failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return response.status(500).json({ error: 'The vehicle document could not be deleted.' });
+  }
 });
 app.get('/api/mongodb/media', async (_request, response) => {
   if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).media);

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { database, nextId } from './database.js';
 import { calculateSegmentFare, calculateTotalFare } from '../../src/utils/routeFare.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, PaymentMethod, Route, Trip, Vehicle } from '../../src/types/index.js';
-import { mongodbContent, mongodbCreateAnnouncement, mongodbCreatePassengerReview, mongodbCreateTripMedia, mongodbHealth, mongodbPassengerReviews, mongodbTripMediaImage, type PassengerReviewInput, type TravelAnnouncementInput } from './mongodbAdapter.js';
+import { mongodbContent, mongodbCreateAnnouncement, mongodbCreatePassengerReview, mongodbCreateTripMedia, mongodbHealth, mongodbPassengerReviews, mongodbTripMediaImage, mongodbUpdateTripMediaStatus, type PassengerReviewInput, type TravelAnnouncementInput, type TripMediaStatus } from './mongodbAdapter.js';
 import {
   oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookSeats, oraclePassengerBookings, oraclePassengerCancelBooking,
   oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerPayBookings, oraclePassengerProfile, oraclePassengerSearchTrips,
@@ -48,6 +48,38 @@ const demoMongoContent = () => ({
   documents: database.vehicles.slice(0, 3).map((vehicle) => ({ id: `document-${vehicle.id}`, title: `${vehicle.registrationNumber} · Insurance document`, detail: `${vehicle.make} ${vehicle.model} document record`, meta: `Expires ${vehicle.nextMaintenanceDate}` })),
   media: [...database.trips.slice(0, 3).map((trip) => ({ id: `media-${trip.id}`, title: `${trip.routeCode} trip media`, detail: `Photo/video reference for ${trip.origin} to ${trip.destination}`, meta: `${trip.vehicleReg ?? 'Vehicle'} · Demo media` })), ...demoTripMedia],
 });
+const enrichTripMedia = async (media: unknown[]) => {
+  const [trips, routes, vehicles, drivers] = process.env.DATABASE_MODE === 'oracle'
+    ? await Promise.all([oracleList('trips'), oracleList('routes'), oracleList('vehicles'), oracleList('drivers')])
+    : [database.trips, database.routes, database.vehicles, database.drivers];
+  const findById = (items: unknown[], id: unknown) => items.find((item) => typeof item === 'object' && item !== null
+    && 'id' in item && Number((item as { id: unknown }).id) === Number(id)) as Record<string, unknown> | undefined;
+  return media.map((item) => {
+    const record = item as Record<string, unknown>;
+    const trip = findById(trips, record.tripId);
+    const routeId = record.routeId ?? trip?.routeId;
+    const route = findById(routes, routeId);
+    const vehicle = findById(vehicles, record.vehicleId ?? trip?.vehicleId);
+    const driver = findById(drivers, record.driverId ?? trip?.driverId);
+    const routeCode = String(route?.routeCode ?? '');
+    const origin = String(route?.origin ?? '');
+    const destination = String(route?.destination ?? '');
+    const tripName = routeCode && origin && destination ? `${routeCode} · ${origin} to ${destination}` : `Trip #${String(record.tripId ?? '—')}`;
+    return {
+      ...record,
+      title: record.title ?? `${tripName} image`,
+      description: record.description ?? record.caption ?? '',
+      tripName,
+      routeId: routeId ?? null,
+      routeName: routeCode && origin && destination ? `${routeCode} · ${origin} to ${destination}` : 'Route unavailable',
+      vehicleNumber: vehicle?.registrationNumber ?? 'Vehicle unavailable',
+      driverName: driver ? `${String(driver.firstName ?? '')} ${String(driver.lastName ?? '')}`.trim() : `Driver #${String(record.driverId ?? '—')}`,
+      status: record.status ?? 'approved',
+      visibility: record.visibility ?? 'public',
+      uploadedAt: record.createdAt ?? record.uploadedAt ?? null,
+    };
+  });
+};
 app.get('/api/health/oracle', async (_request, response) => response.json(await oracleHealth()));
 app.get('/api/health/mongodb', async (_request, response) => response.json(await mongodbHealth()));
 app.get('/api/health/databases', async (_request, response) => response.json({
@@ -57,8 +89,14 @@ app.get('/api/health/databases', async (_request, response) => response.json({
 }));
 app.get('/api/mongodb/content', async (_request, response) => {
   const health = await mongodbHealth();
-  if (health.connected) return response.json({ demo: false, ...(await mongodbContent(_request.query.includeInactive === 'true')) });
-  if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent());
+  if (health.connected) {
+    const content = await mongodbContent(_request.query.includeInactive === 'true');
+    return response.json({ demo: false, ...content, media: await enrichTripMedia(content.media) });
+  }
+  if (process.env.DATABASE_MODE === 'demo') {
+    const content = demoMongoContent();
+    return response.json({ ...content, media: await enrichTripMedia(content.media) });
+  }
   return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
 });
 app.get('/api/mongodb/reviews', async (_request, response) => {
@@ -136,6 +174,23 @@ app.get('/api/mongodb/media/:id/image', async (request, response) => {
   response.set('Content-Type', image.contentType);
   response.set('Cache-Control', 'public, max-age=86400');
   return response.send(image.image);
+});
+app.patch('/api/mongodb/media/:id/status', async (request, response) => {
+  const status = request.body.status;
+  if (status !== 'approved' && status !== 'rejected') return response.status(400).json({ error: 'status must be approved or rejected.' });
+  const health = await mongodbHealth();
+  if (health.connected) {
+    const updated = await mongodbUpdateTripMediaStatus(request.params.id, status as TripMediaStatus);
+    if (!updated) return response.status(404).json({ error: 'Trip media was not found.' });
+    return response.json(updated);
+  }
+  if (process.env.DATABASE_MODE !== 'demo') return response.status(503).json({ error: 'MongoDB is unavailable; trip media cannot be moderated.' });
+  const record = demoTripMedia.find((item) => item.id === request.params.id);
+  if (!record) return response.status(404).json({ error: 'Trip media was not found.' });
+  record.status = status;
+  record.visibility = status === 'approved' ? 'public' : 'hidden';
+  record.reviewedAt = new Date().toISOString();
+  return response.json(record);
 });
 
 function create<T extends { id: number }>(collection: T[], body: Record<string, unknown>, fields: string[], transform: (id: number) => T): void | never {
@@ -665,7 +720,7 @@ app.post('/api/driver/trips/:tripId/media', requireActingDriver, express.raw({ t
   const id = randomUUID();
   const url = `/api/mongodb/media/${id}/image`;
   demoTripMediaImages.set(id, { contentType, image });
-  const media = { id, tripId, driverId, ...(routeId === undefined ? {} : { routeId }), mediaType: 'photo', caption, uploadedBy: `driver:${driverId}`, createdAt: new Date().toISOString(), url };
+  const media = { id, tripId, driverId, ...(routeId === undefined ? {} : { routeId }), mediaType: 'photo', caption, uploadedBy: `driver:${driverId}`, createdAt: new Date().toISOString(), status: 'pending', visibility: 'hidden', url };
   demoTripMedia.push(media);
   return void response.status(201).json(media);
 }));

@@ -31,6 +31,7 @@ export type TripMediaInput = {
   contentType: string;
   image: Buffer;
 };
+export type TripMediaStatus = 'approved' | 'rejected';
 let client: MongoClient | undefined;
 let db: Db | undefined;
 
@@ -105,17 +106,33 @@ export async function mongodbCreatePassengerReview(input: PassengerReviewInput):
 export async function mongodbCreateTripMedia(input: TripMediaInput): Promise<Record<string, unknown>> {
   const database = await getDb();
   const { image, contentType, ...metadata } = input;
+  const id = new ObjectId();
+  const url = `/api/mongodb/media/${id.toString()}/image`;
   const media = {
+    _id: id,
     ...metadata,
     mediaType: 'photo',
     contentType,
     imageData: image.toString('base64'),
+    status: 'pending',
+    visibility: 'hidden',
     uploadedBy: `driver:${input.driverId}`,
     createdAt: new Date().toISOString(),
+    url,
   };
-  const result = await database.collection('trip_media').insertOne(media);
-  const id = result.insertedId.toString();
-  return { ...metadata, mediaType: 'photo', contentType, uploadedBy: media.uploadedBy, createdAt: media.createdAt, id, url: `/api/mongodb/media/${id}/image` };
+  await database.collection('trip_media').insertOne(media);
+  return { ...metadata, mediaType: 'photo', status: media.status, visibility: media.visibility, uploadedBy: media.uploadedBy, createdAt: media.createdAt, id: id.toString(), url };
+}
+
+export async function mongodbUpdateTripMediaStatus(id: string, status: TripMediaStatus): Promise<Record<string, unknown> | null> {
+  if (!ObjectId.isValid(id)) return null;
+  const database = await getDb();
+  const collection = database.collection('trip_media');
+  const result = await collection.updateOne({ _id: new ObjectId(id) }, {
+    $set: { status, visibility: status === 'approved' ? 'public' : 'hidden', reviewedAt: new Date().toISOString() },
+  });
+  if (!result.matchedCount) return null;
+  return collection.findOne({ _id: new ObjectId(id) }, { projection: { imageData: 0, contentType: 0 } });
 }
 
 export async function mongodbTripMediaImage(id: string): Promise<{ contentType: string; image: Buffer } | null> {

@@ -39,6 +39,7 @@ const mongoMocks = vi.hoisted(() => ({
   createPassengerReview: vi.fn(),
   createTripMedia: vi.fn(),
   tripMediaImage: vi.fn(),
+  updateTripMediaStatus: vi.fn(),
 }));
 
 vi.mock('./oracleAdapter.js', () => ({
@@ -78,6 +79,7 @@ vi.mock('./mongodbAdapter.js', () => ({
   mongodbCreatePassengerReview: mongoMocks.createPassengerReview,
   mongodbCreateTripMedia: mongoMocks.createTripMedia,
   mongodbTripMediaImage: mongoMocks.tripMediaImage,
+  mongodbUpdateTripMediaStatus: mongoMocks.updateTripMediaStatus,
   mongodbPassengerReviews: mongoMocks.reviews,
 }));
 
@@ -180,6 +182,7 @@ describe('SmartMove backend API', () => {
     expect(response.status).toBe(200);
     expect(response.body.demo).toBe(true);
     expect(response.body.reviews.length).toBeGreaterThan(0);
+    expect(response.body.media[0]).toMatchObject({ status: 'approved', visibility: 'public', tripName: expect.any(String), routeName: expect.any(String) });
   });
 
   it('uploads trip images only for the assigned driver and serves the saved image', async () => {
@@ -202,13 +205,34 @@ describe('SmartMove backend API', () => {
       .send(image);
 
     expect(uploaded.status).toBe(201);
-    expect(uploaded.body).toMatchObject({ tripId: trip.id, driverId: driver.id, caption: 'Trip photo', mediaType: 'photo' });
+    expect(uploaded.body).toMatchObject({ tripId: trip.id, driverId: driver.id, caption: 'Trip photo', mediaType: 'photo', status: 'pending', visibility: 'hidden' });
     const listed = await request(app).get('/api/mongodb/content');
-    expect(listed.body.media).toContainEqual(expect.objectContaining({ id: uploaded.body.id, tripId: trip.id, caption: 'Trip photo' }));
+    expect(listed.body.media).toContainEqual(expect.objectContaining({ id: uploaded.body.id, tripId: trip.id, caption: 'Trip photo', status: 'pending', visibility: 'hidden' }));
     const imageResponse = await request(app).get(uploaded.body.url);
     expect(imageResponse.status).toBe(200);
     expect(imageResponse.headers['content-type']).toMatch(/image\/png/);
     expect(imageResponse.body).toEqual(image);
+
+    const approved = await request(app).patch(`/api/mongodb/media/${uploaded.body.id}/status`).send({ status: 'approved' });
+    expect(approved.status).toBe(200);
+    expect(approved.body).toMatchObject({ status: 'approved', visibility: 'public' });
+    const rejected = await request(app).patch(`/api/mongodb/media/${uploaded.body.id}/status`).send({ status: 'rejected' });
+    expect(rejected.status).toBe(200);
+    expect(rejected.body).toMatchObject({ status: 'rejected', visibility: 'hidden' });
+    const invalidStatus = await request(app).patch(`/api/mongodb/media/${uploaded.body.id}/status`).send({ status: 'pending' });
+    expect(invalidStatus.status).toBe(400);
+  });
+
+  it('persists admin media decisions through the MongoDB adapter', async () => {
+    const updated = { id: '507f1f77bcf86cd799439011', status: 'approved', visibility: 'public' };
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    mongoMocks.updateTripMediaStatus.mockResolvedValue(updated);
+
+    const response = await request(app).patch(`/api/mongodb/media/${updated.id}/status`).send({ status: 'approved' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(updated);
+    expect(mongoMocks.updateTripMediaStatus).toHaveBeenCalledWith(updated.id, 'approved');
   });
 
   it('creates a travel announcement through the MongoDB adapter', async () => {

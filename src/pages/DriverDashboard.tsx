@@ -131,6 +131,57 @@ const moneylessRating = (rating: number | null) => rating === null ? 'No ratings
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Pure frontend client-side image compression helper to fix the 413 (Payload Too Large) error
+const compressImage = (file: File, maxWidth = 1024, maxHeight = 1024, quality = 0.7): Promise<Blob> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(file); // Fallback to original file if context is not available
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              resolve(blob);
+            } else {
+              resolve(file); // Fallback to original file
+            }
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
+
 async function driverApi<T>(driverId: string, path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('X-Driver-Id', driverId);
@@ -366,20 +417,26 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({
     ? mediaTripId
     : String(assignedTrips[0]?.tripId ?? '');
 
+  // Upload trip media logic WITH client-side image compression
   const uploadTripMedia = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!mediaFile || !selectedMediaTripId) return;
     setUploadingMedia(true);
     try {
+      // 1. Compress image before uploading to avoid 413 Payload Too Large error
+      const compressedBlob = await compressImage(mediaFile);
+
+      // 2. Submit the compressed blob raw binary directly as expected by original backend schema
       await driverApi(driverId, `/driver/trips/${selectedMediaTripId}/media?caption=${encodeURIComponent(mediaCaption.trim())}`, {
         method: 'POST',
-        headers: { 'Content-Type': mediaFile.type },
-        body: mediaFile,
+        headers: { 'Content-Type': 'image/jpeg' }, // Since compression transforms it into a jpeg
+        body: compressedBlob,
       });
+
       setMediaFile(null);
       setMediaCaption('');
       if (mediaInput.current) mediaInput.current.value = '';
-      setToast({ kind: 'success', message: 'Trip image uploaded.' });
+      setToast({ kind: 'success', message: 'Trip image uploaded successfully!' });
     } catch (error) {
       setToast({ kind: 'error', message: error instanceof Error ? error.message : 'Trip image could not be uploaded.' });
     } finally { setUploadingMedia(false); }
@@ -632,7 +689,7 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({
                     <input value={mediaCaption} maxLength={300} onChange={(event) => setMediaCaption(event.target.value)} className={inputClass} />
                   </label>
                   <div className="flex items-center justify-between gap-3 sm:col-span-2">
-                    <span className="truncate text-xs text-slate-500">{mediaFile ? mediaFile.name : 'JPEG, PNG, or WebP · 8 MB maximum'}</span>
+                    <span className="truncate text-xs text-slate-500">{mediaFile ? mediaFile.name : 'JPEG, PNG, or WebP · Automatically compressed'}</span>
                     <button type="submit" disabled={uploadingMedia || !mediaFile} className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
                       <Upload size={14} />{uploadingMedia ? 'Uploading…' : 'Upload image'}
                     </button>

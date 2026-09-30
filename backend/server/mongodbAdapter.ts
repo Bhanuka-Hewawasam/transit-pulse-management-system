@@ -14,11 +14,14 @@ export type TravelAnnouncementInput = {
   tripId?: string;
 };
 export type PassengerReviewInput = {
+  type: 'review' | 'complaint';
   passengerId: number;
-  tripId: number;
-  rating: number;
-  category: string;
+  passengerName: string;
+  tripId?: number;
+  rating?: number;
+  title?: string;
   comment: string;
+  category?: string;
   routeId?: number;
   driverId?: number;
   vehicleId?: number;
@@ -98,9 +101,11 @@ export async function mongodbCreateAnnouncement(input: TravelAnnouncementInput):
 
 export async function mongodbCreatePassengerReview(input: PassengerReviewInput): Promise<Record<string, unknown>> {
   const database = await getDb();
-  const review = { type: 'review', ...input, createdAt: new Date().toISOString() };
+  const timestamp = new Date().toISOString();
+  const review = { ...input, status: 'new', createdAt: timestamp, updatedAt: timestamp };
   const result = await database.collection('passenger_feedback').insertOne(review);
-  return { ...review, id: result.insertedId.toString() };
+  if (!result.acknowledged || !result.insertedId) throw new Error('MongoDB did not acknowledge the feedback insert.');
+  return { ...review, _id: result.insertedId.toString() };
 }
 
 export async function mongodbCreateTripMedia(input: TripMediaInput): Promise<Record<string, unknown>> {
@@ -145,7 +150,8 @@ export async function mongodbTripMediaImage(id: string): Promise<{ contentType: 
 
 export async function mongodbPassengerReviews(): Promise<Record<string, unknown>[]> {
   const database = await getDb();
-  return readWithLegacy(database, 'passenger_feedback', 'passenger_reviews');
+  const records = await database.collection('passenger_feedback').find({}).sort({ createdAt: -1 }).toArray();
+  return records.map(({ _id, ...record }) => ({ ...record, ...( _id === undefined ? {} : { _id: String(_id) }) }));
 }
 
 export async function closeMongo(): Promise<void> {

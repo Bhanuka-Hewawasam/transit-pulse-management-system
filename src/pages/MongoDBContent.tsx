@@ -4,7 +4,8 @@ import Modal from '../components/Modal';
 import SearchBar from '../components/SearchBar';
 import { API_BASE_URL, ApiError, apiGet, apiPatch, apiPost } from '../services/api';
 
-type ContentItem = { id: string; title: string; detail: string; meta: string; type: string };
+type FeedbackDetails = { rating: string; passenger: string; feedbackType: string; status: string; route: string; trip: string; vehicle: string; driver: string; createdAt: string };
+type ContentItem = { id: string; title: string; detail: string; meta: string; type: string; feedback?: FeedbackDetails };
 type TripMediaItem = {
   id: string;
   title: string;
@@ -46,14 +47,33 @@ type MongoContent = {
 type LoadedContent = { items: ContentItem[]; media: TripMediaItem[]; source: 'mongodb' | 'demo' };
 
 const loadMongoContent = async (includeInactive: boolean): Promise<LoadedContent> => {
-  const content = await apiGet<MongoContent>(`/mongodb/content${includeInactive ? '?includeInactive=true' : ''}`);
-  const reviews = content.reviews.map((item, index) => ({
-    id: `review-${value(item, '_id', 'id') || index}`,
-    title: `${value(item, 'type') === 'complaint' ? 'Complaint' : `${value(item, 'rating') || '—'}/5`} · Passenger #${value(item, 'passengerId') || '—'}`,
-    detail: value(item, 'complaint', 'comment', 'feedbackComment'),
-    meta: `${value(item, 'routeId', 'routeCode') || 'Route'} · ${value(item, 'createdAt', 'feedbackDate') || 'Date unavailable'}`,
-    type: 'reviews',
-  }));
+  const [content, feedbackRows] = await Promise.all([
+    apiGet<MongoContent>(`/mongodb/content${includeInactive ? '?includeInactive=true' : ''}`),
+    apiGet<Record<string, unknown>[]>('/mongodb/feedback'),
+  ]);
+  const reviews = [...feedbackRows]
+    .sort((a, b) => new Date(String(b.createdAt ?? '')).getTime() - new Date(String(a.createdAt ?? '')).getTime())
+    .map((item, index) => {
+      const feedback: FeedbackDetails = {
+        rating: value(item, 'rating') ? `${value(item, 'rating')}/5` : 'Not rated',
+        passenger: [value(item, 'passengerName'), value(item, 'passengerId') ? `#${value(item, 'passengerId')}` : ''].filter(Boolean).join(' · ') || 'Passenger unavailable',
+        feedbackType: value(item, 'type') || 'review',
+        status: value(item, 'status') || 'new',
+        route: value(item, 'routeName', 'routeCode', 'routeId') || 'Route unavailable',
+        trip: value(item, 'tripId') ? `#${value(item, 'tripId')}` : '',
+        vehicle: value(item, 'vehicleNumber', 'vehicleRegistration', 'vehicleId'),
+        driver: value(item, 'driverName', 'driverId'),
+        createdAt: value(item, 'createdAt', 'feedbackDate') || 'Date unavailable',
+      };
+      return {
+        id: `review-${value(item, '_id', 'id') || index}`,
+        title: value(item, 'title') || `${feedback.rating} ${feedback.feedbackType}`,
+        detail: value(item, 'comment', 'feedbackComment'),
+        meta: [feedback.passenger, feedback.feedbackType, feedback.status, feedback.route, feedback.trip, feedback.vehicle, feedback.driver, feedback.createdAt].filter(Boolean).join(' · '),
+        type: 'reviews',
+        feedback,
+      };
+    });
   const announcements = content.announcements.map((item, index) => ({
     id: `announcement-${value(item, '_id', 'id') || index}`,
     title: value(item, 'title') || 'Travel announcement',
@@ -255,7 +275,11 @@ const MongoDBContent: React.FC<{ role: 'admin' | 'passenger' | 'driver'; searchV
         </article>)}</div>}
       </section>}
       {!loading && !error && filtered.length === 0 && !showTripMedia && <div className="border-t border-gray-200 py-10 text-center text-sm text-gray-500">No content matches this search and filter.</div>}
-      {filtered.length > 0 && <div className="grid gap-3 md:grid-cols-2">{filtered.map((item) => <article key={item.id} className="rounded border border-gray-200 bg-white p-4"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold uppercase text-blue-800">{item.type}</span><span className="text-xs text-gray-500">{source === 'mongodb' ? 'Live record' : 'Demo record'}</span></div><h3 className="font-semibold text-gray-900">{item.title}</h3><p className="mt-2 break-words text-sm text-gray-600">{item.detail || 'No additional detail.'}</p><p className="mt-3 text-xs text-gray-500">{item.meta}</p></article>)}</div>}
+      {filtered.length > 0 && <div className="grid gap-3 md:grid-cols-2">{filtered.map((item) => <article key={item.id} className="rounded border border-gray-200 bg-white p-4"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold uppercase text-blue-800">{item.type}</span><span className="text-xs text-gray-500">{source === 'mongodb' ? 'Live record' : 'Demo record'}</span></div><h3 className="font-semibold text-gray-900">{item.title}</h3><p className="mt-2 break-words text-sm text-gray-600">{item.detail || 'No additional detail.'}</p>{item.feedback && <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-gray-100 pt-3 text-xs">{[
+        ['Rating', item.feedback.rating], ['Passenger', item.feedback.passenger], ['Type', item.feedback.feedbackType], ['Status', item.feedback.status],
+        ['Route', item.feedback.route], ['Trip', item.feedback.trip], ['Vehicle', item.feedback.vehicle], ['Driver', item.feedback.driver],
+        ['Created', item.feedback.createdAt === 'Date unavailable' ? item.feedback.createdAt : new Date(item.feedback.createdAt).toLocaleString()],
+      ].filter(([, detail]) => detail).map(([label, detail]) => <div key={label}><dt className="text-gray-500">{label}</dt><dd className="break-words font-medium text-gray-800">{detail}</dd></div>)}</dl>}<p className="mt-3 text-xs text-gray-500">{item.meta}</p></article>)}</div>}
       <Modal isOpen={Boolean(selectedMedia)} onClose={() => setSelectedMedia(null)} title={selectedMedia?.title ?? 'Trip media details'} size="lg">
         {selectedMedia && <div className="space-y-4"><TripMediaPreview media={selectedMedia} large /><p className="text-sm text-gray-700">{selectedMedia.description || 'No description provided.'}</p><p className="text-xs text-gray-500">Trip #{selectedMedia.tripId} · {selectedMedia.tripName} · Route #{selectedMedia.routeId} · {selectedMedia.routeName} · {selectedMedia.vehicleNumber} · {selectedMedia.driverName} · {selectedMedia.uploadedAt || 'Date unavailable'} · {selectedMedia.uploadedBy} · {selectedMedia.status} · {selectedMedia.visibility}</p></div>}
       </Modal>

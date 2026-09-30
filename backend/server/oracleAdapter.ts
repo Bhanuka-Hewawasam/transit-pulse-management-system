@@ -266,7 +266,7 @@ export async function oraclePassengerBookings(passengerId: number): Promise<Reco
   try {
     const result = await connection.execute<Record<string, unknown>>(
       `SELECT b.booking_id, b.trip_id, b.seat_number, b.booking_date, b.status AS booking_status, b.amount,
-              t.status AS trip_status, t.departure_time, t.arrival_time, t.available_seats,
+              t.status AS trip_status, t.departure_time, t.arrival_time, t.available_seats, t.vehicle_id, t.driver_id,
               r.route_id, r.route_code, r.origin, r.destination,
               NVL((SELECT status FROM (
                 SELECT py.status FROM payments py WHERE py.booking_id = b.booking_id
@@ -287,6 +287,7 @@ export async function oraclePassengerBookings(passengerId: number): Promise<Reco
       bookingDate: row.BOOKING_DATE, bookingStatus: row.BOOKING_STATUS, amount: row.AMOUNT,
       tripStatus: row.TRIP_STATUS, departureTime: row.DEPARTURE_TIME, arrivalTime: row.ARRIVAL_TIME,
       availableSeats: row.AVAILABLE_SEATS, routeId: row.ROUTE_ID, routeCode: row.ROUTE_CODE,
+      vehicleId: row.VEHICLE_ID, driverId: row.DRIVER_ID,
       origin: row.ORIGIN, destination: row.DESTINATION, paymentStatus: row.PAYMENT_STATUS,
       canCancel: Number(row.CAN_CANCEL) === 1,
     }));

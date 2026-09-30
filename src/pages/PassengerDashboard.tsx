@@ -54,6 +54,8 @@ type PassengerTrip = {
   tripId: number;
   routeId: number;
   routeCode: string;
+  vehicleId?: number;
+  driverId?: number;
   origin: string;
   destination: string;
   departureTime: string;
@@ -93,6 +95,8 @@ type PassengerBooking = {
   destination: string;
   paymentStatus: string;
   canCancel: boolean;
+  vehicleId?: number;
+  driverId?: number;
 };
 
 type PassengerProfile = {
@@ -108,7 +112,7 @@ type PassengerProfile = {
 type ProfileDraft = Pick<PassengerProfile, 'firstName' | 'lastName' | 'phone' | 'address'>;
 type Toast = { kind: 'success' | 'error'; text: string };
 type ContentItem = { title: string; detail: string };
-type FeedbackDraft = { rating: string; category: string; comment: string; error?: string };
+type FeedbackDraft = { rating: string; category: string; title: string; comment: string; error?: string };
 type BookingStep = 1 | 2 | 3 | 4 | 5 | 6;
 type BookingCheckout = { bookingIds: number[]; seatNumbers: string[]; amount: number };
 
@@ -214,6 +218,7 @@ const SummaryCard: React.FC<{ icon: React.ReactNode; label: string; value: numbe
 async function passengerApi<T>(passengerId: string, path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('X-Passenger-Id', passengerId);
+  headers.set('X-Role', 'passenger');
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
   let response: Response;
@@ -690,26 +695,47 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
 
   const updateFeedbackDraft = (tripId: number, patch: Partial<FeedbackDraft>) => {
     setFeedbackDrafts((current) => {
-      const draft = current[tripId] ?? { rating: '5', category: 'general', comment: '' };
+      const draft = current[tripId] ?? { rating: '5', category: 'general', title: '', comment: '' };
       return { ...current, [tripId]: { ...draft, ...patch } };
     });
   };
 
   const submitFeedback = async (event: React.FormEvent<HTMLFormElement>, booking: PassengerBooking) => {
     event.preventDefault();
-    const draft = feedbackDrafts[booking.tripId] ?? { rating: '5', category: 'general', comment: '' };
-    const message = draft.comment.trim() ? '' : 'Comment is required.';
+    const draft = feedbackDrafts[booking.tripId] ?? { rating: '5', category: 'general', title: '', comment: '' };
+    const rating = Number(draft.rating);
+    const message = !draft.comment.trim()
+      ? 'Comment is required.'
+      : !Number.isInteger(rating) || rating < 1 || rating > 5
+        ? 'Rating must be a whole number from 1 to 5.'
+        : '';
     updateFeedbackDraft(booking.tripId, { error: message || undefined });
     if (message) return;
+    if (!profile) {
+      updateFeedbackDraft(booking.tripId, { error: 'Passenger information is unavailable. Select a passenger profile and try again.' });
+      return;
+    }
     setBusyAction('feedback');
     try {
-      await passengerApi(passengerId, '/passenger/feedback', { method: 'POST', body: JSON.stringify({
-        tripId: booking.tripId, rating: Number(draft.rating), category: draft.category, comment: draft.comment.trim(),
-      }) });
+      const payload = {
+        type: 'review',
+        passengerId: profile.passengerId,
+        passengerName: `${profile.firstName} ${profile.lastName}`,
+        routeId: booking.routeId,
+        tripId: booking.tripId,
+        vehicleId: booking.vehicleId,
+        driverId: booking.driverId,
+        rating,
+        title: draft.title.trim() || undefined,
+        category: draft.category,
+        comment: draft.comment.trim(),
+      };
+      const result = await passengerApi<{ success: boolean; data?: { _id?: string } }>(passengerId, '/mongodb/feedback', { method: 'POST', body: JSON.stringify(payload) });
+      if (!result.success || !result.data?._id) throw new Error('The review could not be saved.');
       setSubmittedFeedbackTrips((current) => [...new Set([...current, booking.tripId])]);
-      updateFeedbackDraft(booking.tripId, { error: undefined });
-      setToast({ kind: 'success', text: 'Feedback submitted.' });
-      await refreshBookings();
+      updateFeedbackDraft(booking.tripId, { rating: '5', category: 'general', title: '', comment: '', error: undefined });
+      setToast({ kind: 'success', text: 'Review submitted successfully.' });
+      void refreshBookings().catch(() => undefined);
     } catch (error) {
       const messageText = error instanceof Error ? error.message : 'Feedback could not be submitted.';
       if (/already submitted/i.test(messageText)) {
@@ -776,7 +802,7 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
 
   const feedbackCard = (booking: PassengerBooking) => {
     const submitted = submittedFeedbackTrips.includes(booking.tripId);
-    const draft = feedbackDrafts[booking.tripId] ?? { rating: '5', category: 'general', comment: '' };
+    const draft = feedbackDrafts[booking.tripId] ?? { rating: '5', category: 'general', title: '', comment: '' };
 
     return (
       <article key={booking.bookingId} className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs space-y-4">
@@ -826,6 +852,16 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
             </div>
 
             <label className="block space-y-1 text-xs font-semibold text-slate-700">
+              <span>Review title (optional)</span>
+              <input
+                value={draft.title}
+                onChange={(e) => updateFeedbackDraft(booking.tripId, { title: e.target.value })}
+                maxLength={120}
+                className={inputClass}
+              />
+            </label>
+
+            <label className="block space-y-1 text-xs font-semibold text-slate-700">
               <span>Your feedback comment</span>
               <textarea
                 rows={2}
@@ -840,10 +876,11 @@ const PassengerDashboard: React.FC<PassengerDashboardProps> = ({
             <button
               type="submit"
               disabled={busyAction === 'feedback'}
+              aria-busy={busyAction === 'feedback'}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
             >
               <MessageSquare size={14} />
-              {busyAction === 'feedback' ? 'Submitting…' : 'Submit feedback'}
+              {busyAction === 'feedback' ? 'Submitting review…' : 'Submit review'}
             </button>
           </form>
         )}

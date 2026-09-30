@@ -104,6 +104,17 @@ app.get('/api/mongodb/reviews', async (_request, response) => {
   if (process.env.DATABASE_MODE === 'demo') return response.json(database.feedback);
   return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
 });
+app.get('/api/mongodb/feedback', async (_request, response) => {
+  try {
+    const health = await mongodbHealth();
+    if (!health.connected) return response.status(503).json({ success: false, error: `${health.message}. Passenger feedback could not be loaded.` });
+    const reviews = await mongodbPassengerReviews();
+    return response.json(reviews.sort((a, b) => new Date(String(b.createdAt ?? '')).getTime() - new Date(String(a.createdAt ?? '')).getTime()));
+  } catch (error) {
+    console.error('MongoDB passenger feedback query failed', { errorName: error instanceof Error ? error.name : 'UnknownError' });
+    return response.status(503).json({ success: false, error: 'MongoDB could not load passenger feedback.' });
+  }
+});
 app.get('/api/mongodb/reviews/route/:routeId', async (request, response) => {
   const health = await mongodbHealth();
   if (!health.connected && process.env.DATABASE_MODE !== 'demo') return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
@@ -528,7 +539,7 @@ app.get('/api/passenger/bookings', requireActingPassenger, passengerEndpoint(asy
     return { bookingId: booking.id, tripId: booking.tripId, seatNumber: booking.seatNumber, bookingDate: booking.bookingDate,
       bookingStatus: booking.status, amount: booking.amount, tripStatus: trip?.status, departureTime: trip?.departureTime,
       arrivalTime: trip?.arrivalTime, availableSeats: trip?.availableSeats, routeId: route?.id, routeCode: route?.routeCode,
-      origin: route?.origin, destination: route?.destination, paymentStatus: lastPayment?.status ?? 'unpaid',
+      vehicleId: trip?.vehicleId, driverId: trip?.driverId, origin: route?.origin, destination: route?.destination, paymentStatus: lastPayment?.status ?? 'unpaid',
       canCancel: Boolean(trip && ['pending', 'confirmed'].includes(booking.status) && new Date(trip.departureTime).getTime() > now + 2 * 60 * 60 * 1000) };
   });
   return void response.json(bookings);
@@ -558,59 +569,117 @@ app.post('/api/passenger/feedback', requireActingPassenger, passengerEndpoint(as
   return void response.status(201).json({ tripId, rating, category });
 }));
 
-app.post('/api/mongodb/feedback', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
-  const tripId = Number(request.body.tripId);
-  const rating = Number(request.body.rating);
-  const comment = String(request.body.comment ?? '').trim();
-  const category = String(request.body.category ?? 'general').toLowerCase();
-  if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(rating) || rating < 1 || rating > 5 || !comment) {
-    return void response.status(400).json({ error: 'tripId, a 1-5 rating, and comment are required.' });
+const requirePassengerFeedbackRole = (request: Request, response: Response, next: NextFunction) => {
+  const role = request.get('X-Role')?.toLowerCase();
+  if (role !== 'passenger' || request.get('X-Driver-Id')) {
+    return response.status(403).json({ error: 'Only passengers can submit passenger feedback.' });
   }
-  if (!['service', 'driver', 'vehicle', 'punctuality', 'general'].includes(category)) {
+  return next();
+};
+
+app.post('/api/mongodb/feedback', requirePassengerFeedbackRole, requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  const body = request.body as Record<string, unknown>;
+  const type = body.type;
+  const comment = typeof body.comment === 'string' ? body.comment.trim() : '';
+  const rating = body.rating === undefined ? undefined : Number(body.rating);
+  const category = typeof body.category === 'string' ? body.category.toLowerCase() : undefined;
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  const readId = (field: string): number | undefined => {
+    const value = body[field];
+    if (value === undefined || value === null || value === '') return undefined;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) throw Object.assign(new Error(`${field} must be a positive integer.`), { statusCode: 400 });
+    return parsed;
+  };
+  let routeId: number | undefined;
+  let tripId: number | undefined;
+  let vehicleId: number | undefined;
+  let driverId: number | undefined;
+  try {
+    routeId = readId('routeId');
+    tripId = readId('tripId');
+    vehicleId = readId('vehicleId');
+    driverId = readId('driverId');
+  } catch (error) {
+    return void response.status(400).json({ error: (error as Error).message });
+  }
+  if (type !== 'review' && type !== 'complaint') return void response.status(400).json({ error: 'type must be review or complaint.' });
+  if (!comment) return void response.status(400).json({ error: 'comment is required.' });
+  if (body.rating !== undefined && (!Number.isInteger(rating) || rating! < 1 || rating! > 5)) {
+    return void response.status(400).json({ error: 'rating must be a whole number from 1 to 5.' });
+  }
+  if (body.title !== undefined && typeof body.title !== 'string') return void response.status(400).json({ error: 'title must be a string.' });
+  if (category && !['service', 'driver', 'vehicle', 'punctuality', 'general'].includes(category)) {
     return void response.status(400).json({ error: 'Feedback category is not valid.' });
   }
 
+  const passenger = process.env.DATABASE_MODE === 'oracle'
+    ? await oraclePassengerProfile(passengerId)
+    : database.passengers.find((item) => item.id === passengerId);
+  if (!passenger) return void response.status(404).json({ error: 'Passenger was not found.' });
+  const passengerName = `${passenger.firstName} ${passenger.lastName}`;
+
+  let trip: Record<string, unknown> | undefined;
+  if (tripId !== undefined) {
+    if (process.env.DATABASE_MODE === 'oracle') {
+      const [trips, bookings] = await Promise.all([oracleList('trips'), oraclePassengerBookings(passengerId)]);
+      trip = trips.find((item) => Number(item.id) === tripId);
+      const booking = bookings.find((item) => Number(item.tripId) === tripId && item.bookingStatus !== 'cancelled');
+      if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+      if (String(booking?.tripStatus).toLowerCase() !== 'completed') return void response.status(400).json({ error: 'Feedback is allowed only for completed trips booked by this passenger.' });
+    } else {
+      const foundTrip = database.trips.find((item) => item.id === tripId);
+      if (!foundTrip) return void response.status(404).json({ error: 'Trip was not found.' });
+      trip = foundTrip as unknown as Record<string, unknown>;
+      if (foundTrip.status !== 'completed') return void response.status(400).json({ error: 'Feedback is allowed only for completed trips.' });
+      if (!database.bookings.some((booking) => booking.passengerId === passengerId && booking.tripId === tripId && booking.status !== 'cancelled')) {
+        return void response.status(400).json({ error: 'Passenger must have a non-cancelled booking for this trip.' });
+      }
+      if (database.feedback.some((item) => item.passengerId === passengerId && item.tripId === tripId)) {
+        return void response.status(400).json({ error: 'Passenger has already submitted feedback for this trip.' });
+      }
+    }
+    const relatedIds = { routeId: Number(trip.routeId), vehicleId: Number(trip.vehicleId), driverId: Number(trip.driverId) };
+    if ((routeId !== undefined && routeId !== relatedIds.routeId)
+      || (vehicleId !== undefined && vehicleId !== relatedIds.vehicleId)
+      || (driverId !== undefined && driverId !== relatedIds.driverId)) {
+      return void response.status(400).json({ error: 'Feedback IDs must match the selected trip.' });
+    }
+    routeId ??= relatedIds.routeId;
+    vehicleId ??= relatedIds.vehicleId;
+    driverId ??= relatedIds.driverId;
+  }
+
   const mongo = await mongodbHealth();
-  if (!mongo.connected && process.env.DATABASE_MODE !== 'demo') {
-    return void response.status(503).json({ error: 'MongoDB is unavailable; feedback cannot be saved.' });
-  }
-
-  if (process.env.DATABASE_MODE === 'oracle') {
-    await oraclePassengerSubmitFeedback(passengerId, tripId, rating, comment, category);
-  } else {
-    const trip = database.trips.find((item) => item.id === tripId);
-    if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
-    if (trip.status !== 'completed') return void response.status(400).json({ error: 'Feedback is allowed only for completed trips.' });
-    if (!database.bookings.some((booking) => booking.passengerId === passengerId && booking.tripId === tripId && booking.status !== 'cancelled')) {
-      return void response.status(400).json({ error: 'Passenger must have a non-cancelled booking for this trip.' });
-    }
-    if (database.feedback.some((item) => item.passengerId === passengerId && item.tripId === tripId)) {
-      return void response.status(400).json({ error: 'Passenger has already submitted feedback for this trip.' });
-    }
-  }
-
-  const trip = database.trips.find((item) => item.id === tripId);
   const input: PassengerReviewInput = {
-    passengerId, tripId, rating, category, comment,
-    ...(trip ? { routeId: trip.routeId, driverId: trip.driverId, vehicleId: trip.vehicleId } : {}),
+    type,
+    passengerId,
+    passengerName,
+    ...(tripId === undefined ? {} : { tripId }),
+    ...(routeId === undefined ? {} : { routeId }),
+    ...(vehicleId === undefined ? {} : { vehicleId }),
+    ...(driverId === undefined ? {} : { driverId }),
+    ...(rating === undefined ? {} : { rating }),
+    ...(title ? { title } : {}),
+    comment,
+    ...(category ? { category } : {}),
   };
-  if (mongo.connected) {
-    const review = await mongodbCreatePassengerReview(input);
-    if (process.env.DATABASE_MODE === 'demo') {
-      database.feedback.push({
-        id: nextId(database.feedback), passengerId, tripId, driverId: trip?.driverId ?? null,
-        vehicleId: trip?.vehicleId ?? null, rating, comment, category: category as Feedback['category'], feedbackDate: String(review.createdAt),
-      } as Feedback);
-    }
-    return void response.status(201).json(review);
-  }
 
-  const feedback: Feedback = {
-    id: nextId(database.feedback), passengerId, tripId, driverId: trip!.driverId, vehicleId: trip!.vehicleId,
-    rating, comment, feedbackDate: new Date().toISOString(), category: category as Feedback['category'],
-  };
-  database.feedback.push(feedback);
-  return void response.status(201).json({ tripId, rating, category });
+  if (mongo.connected) {
+    try {
+      const data = await mongodbCreatePassengerReview(input);
+      if (typeof data._id !== 'string' || !data._id) throw new Error('MongoDB did not return an inserted ID.');
+      console.info('MongoDB passenger feedback inserted', { collection: 'passenger_feedback', passengerId, insertedId: data._id });
+      return void response.status(201).json({ success: true, data });
+    } catch (error) {
+      console.error('MongoDB passenger feedback insert failed', { collection: 'passenger_feedback', errorName: error instanceof Error ? error.name : 'UnknownError' });
+      return void response.status(500).json({ success: false, error: 'MongoDB insertion failed. The review could not be saved.' });
+    }
+  }
+  const mongoFailure = mongo.message.toLowerCase().includes('not configured')
+    ? 'MongoDB is not configured.'
+    : 'MongoDB is not connected.';
+  return void response.status(503).json({ success: false, error: `${mongoFailure} The review could not be saved.` });
 }));
 
 app.get('/api/passenger/profile', requireActingPassenger, passengerEndpoint(async (_request, response, passengerId) => {

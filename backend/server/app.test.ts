@@ -254,49 +254,127 @@ describe('SmartMove backend API', () => {
     const passenger = database.passengers[0];
     const trip = database.trips.find((item) => item.status === 'completed' && database.bookings.some((booking) => booking.passengerId === passenger.id && booking.tripId === item.id && booking.status !== 'cancelled'))!;
     const originalFeedback = [...database.feedback];
-    const payload = { tripId: trip.id, rating: 4, category: 'service', comment: 'A clear test review' };
-    const saved = { ...payload, passengerId: passenger.id, type: 'review', id: 'review-new', createdAt: '2026-09-30T00:00:00.000Z' };
+    const foreignPassenger = database.passengers.find((item) => item.id !== passenger.id)!;
+    const payload = { type: 'review', passengerId: foreignPassenger.id, passengerName: 'Untrusted Name', tripId: trip.id, routeId: trip.routeId, vehicleId: trip.vehicleId, driverId: trip.driverId, rating: '4', category: 'service', title: 'A test title', comment: ' A clear test review ', status: 'approved', createdAt: '2000-01-01' };
+    const saved = { ...payload, passengerId: passenger.id, passengerName: `${passenger.firstName} ${passenger.lastName}`, rating: 4, comment: 'A clear test review', status: 'new', _id: 'review-new', createdAt: '2026-09-30T00:00:00.000Z', updatedAt: '2026-09-30T00:00:00.000Z' };
     mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
     mongoMocks.createPassengerReview.mockResolvedValue(saved);
     mongoMocks.content.mockResolvedValue({ reviews: [saved], announcements: [], documents: [], media: [] });
+    mongoMocks.reviews.mockResolvedValue([saved]);
 
     try {
-      const response = await request(app).post('/api/mongodb/feedback').set('X-Passenger-Id', String(passenger.id)).send(payload);
-      const content = await request(app).get('/api/mongodb/content');
+      const response = await request(app).post('/api/mongodb/feedback').set('X-Role', 'passenger').set('X-Passenger-Id', String(passenger.id)).send(payload);
+      const content = await request(app).get('/api/mongodb/feedback');
 
       expect(response.status).toBe(201);
+      expect(response.body).toEqual({ success: true, data: saved });
       expect(mongoMocks.createPassengerReview).toHaveBeenCalledWith(expect.objectContaining({
-        passengerId: passenger.id, tripId: trip.id, rating: 4, category: 'service', comment: 'A clear test review',
+        type: 'review', passengerId: passenger.id, passengerName: `${passenger.firstName} ${passenger.lastName}`,
+        tripId: trip.id, routeId: trip.routeId, vehicleId: trip.vehicleId, driverId: trip.driverId,
+        rating: 4, category: 'service', title: 'A test title', comment: 'A clear test review',
       }));
+      const persistedInput = mongoMocks.createPassengerReview.mock.calls[0][0];
+      expect(persistedInput).not.toHaveProperty('status');
+      expect(persistedInput).not.toHaveProperty('createdAt');
+      expect(persistedInput).not.toHaveProperty('updatedAt');
+      expect(persistedInput.passengerId).toBe(passenger.id);
+      expect(persistedInput.passengerName).not.toBe('Untrusted Name');
       expect(content.status).toBe(200);
-      expect(content.body.reviews).toContainEqual(saved);
+      expect(content.body).toContainEqual(saved);
     } finally {
       database.feedback.splice(0, database.feedback.length, ...originalFeedback);
     }
   });
 
-  it('keeps new reviews visible in demo content when MongoDB is unavailable', async () => {
+  it('does not claim a feedback save when MongoDB is unavailable in demo mode', async () => {
     const passenger = database.passengers[0];
     const trip = database.trips.find((item) => item.status === 'completed'
       && database.bookings.some((booking) => booking.passengerId === passenger.id && booking.tripId === item.id && booking.status !== 'cancelled')
       && !database.feedback.some((feedback) => feedback.passengerId === passenger.id && feedback.tripId === item.id));
     expect(trip).toBeDefined();
     const originalFeedback = [...database.feedback];
-    const payload = { tripId: trip!.id, rating: 5, category: 'general', comment: 'Visible demo review' };
+    const payload = { type: 'review', tripId: trip!.id, rating: 5, category: 'general', comment: 'Visible demo review' };
     mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: false, mode: 'demo', message: 'not configured' });
 
     try {
-      const response = await request(app).post('/api/mongodb/feedback').set('X-Passenger-Id', String(passenger.id)).send(payload);
-      const content = await request(app).get('/api/mongodb/content');
+      const response = await request(app).post('/api/mongodb/feedback').set('X-Role', 'passenger').set('X-Passenger-Id', String(passenger.id)).send(payload);
+      const content = await request(app).get('/api/mongodb/feedback');
 
-      expect(response.status).toBe(201);
-      expect(content.body.reviews).toContainEqual(expect.objectContaining({
-        passengerId: passenger.id, tripId: trip!.id, rating: 5, comment: 'Visible demo review',
-      }));
+      expect(response.status).toBe(503);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toContain('MongoDB is not configured');
+      expect(content.status).toBe(503);
+      expect(database.feedback).toEqual(originalFeedback);
       expect(mongoMocks.createPassengerReview).not.toHaveBeenCalled();
     } finally {
       database.feedback.splice(0, database.feedback.length, ...originalFeedback);
     }
+  });
+
+  it.each(['', '   '])('rejects an empty feedback comment (%s)', async (comment) => {
+    const response = await request(app).post('/api/mongodb/feedback').set('X-Role', 'passenger').set('X-Passenger-Id', String(database.passengers[0].id))
+      .send({ type: 'review', comment, rating: 5 });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe('comment is required.');
+    expect(mongoMocks.createPassengerReview).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 6])('rejects feedback rating %i', async (rating) => {
+    const response = await request(app).post('/api/mongodb/feedback').set('X-Role', 'passenger').set('X-Passenger-Id', String(database.passengers[0].id))
+      .send({ type: 'review', comment: 'A comment', rating });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatch(/rating must be a whole number from 1 to 5/);
+    expect(mongoMocks.createPassengerReview).not.toHaveBeenCalled();
+  });
+
+  it('rejects feedback creation for admin and driver roles', async () => {
+    const admin = await request(app).post('/api/mongodb/feedback').set('X-Role', 'admin')
+      .set('X-Passenger-Id', String(database.passengers[0].id)).send({ type: 'review', comment: 'Not allowed' });
+    const driver = await request(app).post('/api/mongodb/feedback').set('X-Driver-Id', String(database.drivers[0].id))
+      .send({ type: 'review', comment: 'Not allowed' });
+    const missingRole = await request(app).post('/api/mongodb/feedback').set('X-Passenger-Id', String(database.passengers[0].id))
+      .send({ type: 'review', comment: 'Role is required' });
+    const expected = { error: 'Only passengers can submit passenger feedback.' };
+    expect(admin.status).toBe(403);
+    expect(admin.body).toEqual(expected);
+    expect(driver.status).toBe(403);
+    expect(driver.body).toEqual(expected);
+    expect(missingRole.status).toBe(403);
+    expect(missingRole.body).toEqual(expected);
+    expect(mongoMocks.createPassengerReview).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to demo success when a MongoDB insertion fails', async () => {
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    mongoMocks.createPassengerReview.mockRejectedValue(new Error('write failed'));
+    const response = await request(app).post('/api/mongodb/feedback').set('X-Role', 'passenger').set('X-Passenger-Id', String(database.passengers[0].id))
+      .send({ type: 'review', comment: 'Must not falsely succeed', rating: 5 });
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ success: false, error: 'MongoDB insertion failed. The review could not be saved.' });
+  });
+
+  it('returns a useful error when MongoDB is unavailable outside demo mode', async () => {
+    process.env.DATABASE_MODE = 'oracle';
+    const passenger = database.passengers[0];
+    oracleMocks.passengerExists.mockResolvedValue(true);
+    oracleMocks.passengerProfile.mockResolvedValue({ passengerId: passenger.id, firstName: passenger.firstName, lastName: passenger.lastName });
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: false, mode: 'mongodb', message: 'MongoDB connection failed' });
+    const response = await request(app).post('/api/mongodb/feedback').set('X-Role', 'passenger').set('X-Passenger-Id', String(passenger.id))
+      .send({ type: 'review', comment: 'Cannot save', rating: 4 });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ success: false, error: 'MongoDB is not connected. The review could not be saved.' });
+  });
+
+  it('returns passenger feedback newest first from the MongoDB collection', async () => {
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    mongoMocks.reviews.mockResolvedValue([
+      { _id: 'older', createdAt: '2026-09-28T00:00:00.000Z' },
+      { _id: 'newer', createdAt: '2026-09-30T00:00:00.000Z' },
+    ]);
+    const response = await request(app).get('/api/mongodb/feedback');
+    expect(response.status).toBe(200);
+    expect(response.body.map((item: { _id: string }) => item._id)).toEqual(['newer', 'older']);
+    expect(mongoMocks.reviews).toHaveBeenCalledOnce();
   });
 
   it('rejects announcements with invalid fields before writing', async () => {

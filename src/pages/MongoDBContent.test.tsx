@@ -4,6 +4,7 @@ import MongoDBContent from './MongoDBContent';
 
 const announcements: Record<string, unknown>[] = [];
 const mediaRecords: Record<string, unknown>[] = [];
+const feedbackRecords: Record<string, unknown>[] = [];
 const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
   if (init?.method === 'PATCH') {
     const payload = JSON.parse(String(init.body)) as { status: string };
@@ -19,6 +20,9 @@ const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
     announcements.push(saved);
     return { ok: true, json: async () => saved } as Response;
   }
+  if (String(_input).endsWith('/mongodb/feedback')) {
+    return { ok: true, json: async () => [...feedbackRecords] } as Response;
+  }
   return {
     ok: true,
     json: async () => ({ demo: true, reviews: [], announcements: [...announcements], documents: [], media: mediaRecords }),
@@ -27,6 +31,7 @@ const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
 
 beforeEach(() => {
   announcements.length = 0;
+  feedbackRecords.length = 0;
   mediaRecords.splice(0, mediaRecords.length,
     { id: 'media-pending', type: 'photo', title: 'Trip arrival photo', caption: 'Bus at terminal', tripId: 18, tripName: 'R018 · Colombo to Kandy', routeId: 4, routeName: 'R018 · Colombo to Kandy', vehicleNumber: 'WP-ABC-1234', driverName: 'Sunil Fernando', createdAt: '2026-09-29T10:00:00.000Z', uploadedBy: 'driver:3', status: 'pending', visibility: 'hidden', url: '/api/mongodb/media/media-pending/image' },
     { id: 'media-approved', type: 'photo', title: 'Departure bay', tripId: 18, tripName: 'R018 · Colombo to Kandy', routeId: 4, routeName: 'R018 · Colombo to Kandy', vehicleNumber: 'WP-ABC-1234', driverName: 'Sunil Fernando', createdAt: '2026-09-28T10:00:00.000Z', uploadedBy: 'driver:3', status: 'approved', visibility: 'public', mediaType: 'photo' },
@@ -66,7 +71,7 @@ describe('MongoDB content announcements', () => {
 
     expect(await screen.findByText('Weekend service')).toBeInTheDocument();
     expect(announcements[1]).toMatchObject({ title: 'Weekend service', audience: 'all', status: 'scheduled' });
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === undefined)).toHaveLength(3));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === undefined)).toHaveLength(6));
     expect(await screen.findByText('Announcement saved successfully.')).toBeInTheDocument();
   });
 
@@ -94,5 +99,25 @@ describe('MongoDB content announcements', () => {
     expect(await screen.findByText('Trip media approved.')).toBeInTheDocument();
     expect(mediaRecords[0]).toMatchObject({ status: 'approved', visibility: 'public' });
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+  });
+
+  it('loads and renders feedback from the API newest first with review details', async () => {
+    feedbackRecords.push(
+      { _id: 'older', type: 'review', passengerId: 2, passengerName: 'Older Passenger', rating: 3, title: 'Older review', comment: 'Earlier comment', status: 'new', routeId: 'R002', tripId: 12, vehicleId: 4, driverId: 5, createdAt: '2026-09-28T10:00:00.000Z' },
+      { _id: 'newer', type: 'review', passengerId: 1, passengerName: 'Newer Passenger', rating: 5, title: 'Latest review', comment: 'The bus was clean.', status: 'new', routeId: 'R005', tripId: 15, vehicleId: 7, driverId: 3, createdAt: '2026-09-30T10:00:00.000Z' },
+    );
+    render(<MongoDBContent role="admin" />);
+
+    expect(await screen.findByText('Latest review')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter content' }), { target: { value: 'reviews' } });
+    const cards = screen.getAllByRole('article');
+    expect(cards[0]).toHaveTextContent('Newer Passenger');
+    expect(cards[0]).toHaveTextContent('The bus was clean.');
+    expect(cards[0]).toHaveTextContent('R005');
+    expect(cards[0]).toHaveTextContent('Trip#15');
+    expect(cards[0]).toHaveTextContent('Vehicle7');
+    expect(cards[0]).toHaveTextContent('Driver3');
+    expect(cards[1]).toHaveTextContent('Older Passenger');
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/mongodb/feedback'), undefined);
   });
 });

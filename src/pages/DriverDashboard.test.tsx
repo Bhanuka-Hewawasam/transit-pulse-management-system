@@ -26,6 +26,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   else if (url.includes('/driver/feedback-summary')) body = { averageRating: 4.8, ratingCount: 6, recentComments: [] };
   else if (url.includes('/driver/profile')) body = driverProfile;
   else if (url.includes('/start') && init?.method === 'POST') body = { tripId: 18, status: 'in_progress' };
+  else if (url.includes('/driver/trips/18/media') && init?.method === 'POST') body = { tripId: 18, mediaType: 'photo' };
   return { ok: true, json: async () => body } as Response;
 });
 
@@ -83,5 +84,31 @@ describe('Driver dashboard', () => {
     expect(await screen.findAllByText('Maya Perera')).toHaveLength(2);
     const driverCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/driver/'));
     expect(driverCalls.every(([, init]) => new Headers(init?.headers).get('X-Driver-Id') === '3')).toBe(true);
+  });
+
+  it('uploads an image for a selected assigned trip', async () => {
+    render(<DriverDashboard />);
+    const driverInput = await screen.findByLabelText('Driver profile');
+    fireEvent.click(driverInput);
+    fireEvent.change(driverInput, { target: { value: 'Sunil' } });
+    fireEvent.click(await screen.findByText('Sunil Fernando'));
+
+    expect(await screen.findByRole('heading', { name: 'Trip Media Upload' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Image'), {
+      target: { files: [new File(['png'], 'trip.png', { type: 'image/png' })] },
+    });
+    fireEvent.change(screen.getByLabelText('Caption (optional)'), { target: { value: 'Trip arrival' } });
+    const uploadButton = screen.getByRole('button', { name: 'Upload image' });
+    await waitFor(() => expect(uploadButton).toBeEnabled());
+    fireEvent.submit(uploadButton.closest('form')!);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([input, init]) => String(input).includes('/api/driver/trips/18/media') && init?.method === 'POST');
+      expect(call).toBeDefined();
+      expect(new Headers(call?.[1]?.headers).get('X-Driver-Id')).toBe('3');
+      expect(new Headers(call?.[1]?.headers).get('Content-Type')).toBe('image/png');
+      expect(call?.[1]?.body).toBeInstanceOf(File);
+    });
+    expect(await screen.findByText('Trip image uploaded.')).toBeInTheDocument();
   });
 });

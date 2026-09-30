@@ -36,6 +36,9 @@ const mongoMocks = vi.hoisted(() => ({
   content: vi.fn(),
   reviews: vi.fn(),
   createAnnouncement: vi.fn(),
+  createPassengerReview: vi.fn(),
+  createTripMedia: vi.fn(),
+  tripMediaImage: vi.fn(),
 }));
 
 vi.mock('./oracleAdapter.js', () => ({
@@ -72,6 +75,9 @@ vi.mock('./mongodbAdapter.js', () => ({
   mongodbHealth: mongoMocks.health,
   mongodbContent: mongoMocks.content,
   mongodbCreateAnnouncement: mongoMocks.createAnnouncement,
+  mongodbCreatePassengerReview: mongoMocks.createPassengerReview,
+  mongodbCreateTripMedia: mongoMocks.createTripMedia,
+  mongodbTripMediaImage: mongoMocks.tripMediaImage,
   mongodbPassengerReviews: mongoMocks.reviews,
 }));
 
@@ -176,6 +182,35 @@ describe('SmartMove backend API', () => {
     expect(response.body.reviews.length).toBeGreaterThan(0);
   });
 
+  it('uploads trip images only for the assigned driver and serves the saved image', async () => {
+    const trip = database.trips.find((item) => database.drivers.some((driver) => driver.id === item.driverId))!;
+    const driver = database.drivers.find((item) => item.id === trip.driverId)!;
+    const otherDriver = database.drivers.find((item) => item.id !== driver.id)!;
+    const image = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+    const forbidden = await request(app)
+      .post(`/api/driver/trips/${trip.id}/media`)
+      .set('X-Driver-Id', String(otherDriver.id))
+      .set('Content-Type', 'image/png')
+      .send(image);
+    expect(forbidden.status).toBe(404);
+
+    const uploaded = await request(app)
+      .post(`/api/driver/trips/${trip.id}/media?caption=Trip%20photo`)
+      .set('X-Driver-Id', String(driver.id))
+      .set('Content-Type', 'image/png')
+      .send(image);
+
+    expect(uploaded.status).toBe(201);
+    expect(uploaded.body).toMatchObject({ tripId: trip.id, driverId: driver.id, caption: 'Trip photo', mediaType: 'photo' });
+    const listed = await request(app).get('/api/mongodb/content');
+    expect(listed.body.media).toContainEqual(expect.objectContaining({ id: uploaded.body.id, tripId: trip.id, caption: 'Trip photo' }));
+    const imageResponse = await request(app).get(uploaded.body.url);
+    expect(imageResponse.status).toBe(200);
+    expect(imageResponse.headers['content-type']).toMatch(/image\/png/);
+    expect(imageResponse.body).toEqual(image);
+  });
+
   it('creates a travel announcement through the MongoDB adapter', async () => {
     const payload = {
       title: 'Route update', message: 'Expect delays this afternoon.', audience: 'drivers', startDate: '2026-09-30', endDate: '2026-10-01',
@@ -189,6 +224,55 @@ describe('SmartMove backend API', () => {
     expect(response.status).toBe(201);
     expect(response.body).toMatchObject({ ...payload, id: 'announcement-2', active: true });
     expect(mongoMocks.createAnnouncement).toHaveBeenCalledWith(payload);
+  });
+
+  it('stores passenger feedback in MongoDB for the admin content feed', async () => {
+    const passenger = database.passengers[0];
+    const trip = database.trips.find((item) => item.status === 'completed' && database.bookings.some((booking) => booking.passengerId === passenger.id && booking.tripId === item.id && booking.status !== 'cancelled'))!;
+    const originalFeedback = [...database.feedback];
+    const payload = { tripId: trip.id, rating: 4, category: 'service', comment: 'A clear test review' };
+    const saved = { ...payload, passengerId: passenger.id, type: 'review', id: 'review-new', createdAt: '2026-09-30T00:00:00.000Z' };
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: true, mode: 'mongodb', message: 'connected' });
+    mongoMocks.createPassengerReview.mockResolvedValue(saved);
+    mongoMocks.content.mockResolvedValue({ reviews: [saved], announcements: [], documents: [], media: [] });
+
+    try {
+      const response = await request(app).post('/api/mongodb/feedback').set('X-Passenger-Id', String(passenger.id)).send(payload);
+      const content = await request(app).get('/api/mongodb/content');
+
+      expect(response.status).toBe(201);
+      expect(mongoMocks.createPassengerReview).toHaveBeenCalledWith(expect.objectContaining({
+        passengerId: passenger.id, tripId: trip.id, rating: 4, category: 'service', comment: 'A clear test review',
+      }));
+      expect(content.status).toBe(200);
+      expect(content.body.reviews).toContainEqual(saved);
+    } finally {
+      database.feedback.splice(0, database.feedback.length, ...originalFeedback);
+    }
+  });
+
+  it('keeps new reviews visible in demo content when MongoDB is unavailable', async () => {
+    const passenger = database.passengers[0];
+    const trip = database.trips.find((item) => item.status === 'completed'
+      && database.bookings.some((booking) => booking.passengerId === passenger.id && booking.tripId === item.id && booking.status !== 'cancelled')
+      && !database.feedback.some((feedback) => feedback.passengerId === passenger.id && feedback.tripId === item.id));
+    expect(trip).toBeDefined();
+    const originalFeedback = [...database.feedback];
+    const payload = { tripId: trip!.id, rating: 5, category: 'general', comment: 'Visible demo review' };
+    mongoMocks.health.mockResolvedValue({ database: 'MongoDB', connected: false, mode: 'demo', message: 'not configured' });
+
+    try {
+      const response = await request(app).post('/api/mongodb/feedback').set('X-Passenger-Id', String(passenger.id)).send(payload);
+      const content = await request(app).get('/api/mongodb/content');
+
+      expect(response.status).toBe(201);
+      expect(content.body.reviews).toContainEqual(expect.objectContaining({
+        passengerId: passenger.id, tripId: trip!.id, rating: 5, comment: 'Visible demo review',
+      }));
+      expect(mongoMocks.createPassengerReview).not.toHaveBeenCalled();
+    } finally {
+      database.feedback.splice(0, database.feedback.length, ...originalFeedback);
+    }
   });
 
   it('rejects announcements with invalid fields before writing', async () => {

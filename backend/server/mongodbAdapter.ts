@@ -1,4 +1,4 @@
-import { MongoClient, type Db } from 'mongodb';
+import { MongoClient, ObjectId, type Db } from 'mongodb';
 
 export type MongoHealth = { database: 'MongoDB'; connected: boolean; mode: 'mongodb' | 'demo'; message: string };
 export type AnnouncementAudience = 'all' | 'passengers' | 'drivers';
@@ -12,6 +12,24 @@ export type TravelAnnouncementInput = {
   status: 'draft' | 'published' | 'scheduled' | 'expired';
   routeId?: string;
   tripId?: string;
+};
+export type PassengerReviewInput = {
+  passengerId: number;
+  tripId: number;
+  rating: number;
+  category: string;
+  comment: string;
+  routeId?: number;
+  driverId?: number;
+  vehicleId?: number;
+};
+export type TripMediaInput = {
+  tripId: number;
+  driverId: number;
+  routeId?: number;
+  caption: string;
+  contentType: string;
+  image: Buffer;
 };
 let client: MongoClient | undefined;
 let db: Db | undefined;
@@ -45,7 +63,7 @@ export async function mongodbContent(includeInactiveAnnouncements = false): Prom
     readWithLegacy(database, 'passenger_feedback', 'passenger_reviews'),
     readWithLegacy(database, 'announcements', 'travel_announcements', includeInactiveAnnouncements ? {} : { active: true }),
     database.collection('vehicle_documents').find({}).toArray(),
-    database.collection('trip_media').find({}).toArray(),
+    database.collection('trip_media').find({}, { projection: { imageData: 0, contentType: 0 } }).toArray(),
   ]);
   return { reviews, announcements, documents, media };
 }
@@ -75,6 +93,37 @@ export async function mongodbCreateAnnouncement(input: TravelAnnouncementInput):
   };
   const result = await database.collection('announcements').insertOne(announcement);
   return { ...announcement, id: result.insertedId.toString() };
+}
+
+export async function mongodbCreatePassengerReview(input: PassengerReviewInput): Promise<Record<string, unknown>> {
+  const database = await getDb();
+  const review = { type: 'review', ...input, createdAt: new Date().toISOString() };
+  const result = await database.collection('passenger_feedback').insertOne(review);
+  return { ...review, id: result.insertedId.toString() };
+}
+
+export async function mongodbCreateTripMedia(input: TripMediaInput): Promise<Record<string, unknown>> {
+  const database = await getDb();
+  const { image, contentType, ...metadata } = input;
+  const media = {
+    ...metadata,
+    mediaType: 'photo',
+    contentType,
+    imageData: image.toString('base64'),
+    uploadedBy: `driver:${input.driverId}`,
+    createdAt: new Date().toISOString(),
+  };
+  const result = await database.collection('trip_media').insertOne(media);
+  const id = result.insertedId.toString();
+  return { ...metadata, mediaType: 'photo', contentType, uploadedBy: media.uploadedBy, createdAt: media.createdAt, id, url: `/api/mongodb/media/${id}/image` };
+}
+
+export async function mongodbTripMediaImage(id: string): Promise<{ contentType: string; image: Buffer } | null> {
+  if (!ObjectId.isValid(id)) return null;
+  const database = await getDb();
+  const record = await database.collection('trip_media').findOne({ _id: new ObjectId(id) }, { projection: { contentType: 1, imageData: 1 } });
+  if (typeof record?.contentType !== 'string' || typeof record.imageData !== 'string') return null;
+  return { contentType: record.contentType, image: Buffer.from(record.imageData, 'base64') };
 }
 
 export async function mongodbPassengerReviews(): Promise<Record<string, unknown>[]> {

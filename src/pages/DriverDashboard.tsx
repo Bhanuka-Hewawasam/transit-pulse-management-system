@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Sparkles,
   LockKeyhole,
+  Upload,
 } from 'lucide-react';
 import DataTable from '../components/DataTable';
 import Modal from '../components/Modal';
@@ -230,6 +231,11 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingTripId, setSavingTripId] = useState<number | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [mediaTripId, setMediaTripId] = useState('');
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaCaption, setMediaCaption] = useState('');
+  const mediaInput = useRef<HTMLInputElement>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -311,6 +317,7 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({
 
   const selectDriver = (value: string | number) => {
     setDriverId(String(value)); setSummary(null); setProfile(null); setVehicle(null); setManifest([]);
+    setMediaTripId(''); setMediaFile(null); setMediaCaption('');
     setToast(null); setErrors({});
   };
 
@@ -352,6 +359,30 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({
       setToast({ kind: 'success', message: 'Driver profile saved.' });
     } catch (error) { setToast({ kind: 'error', message: error instanceof Error ? error.message : 'Profile could not be saved.' }); }
     finally { setSaving(false); }
+  };
+
+  const assignedTrips = [...new Map(Object.values(trips).flat().map((trip) => [trip.tripId, trip])).values()];
+  const selectedMediaTripId = assignedTrips.some((trip) => String(trip.tripId) === mediaTripId)
+    ? mediaTripId
+    : String(assignedTrips[0]?.tripId ?? '');
+
+  const uploadTripMedia = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!mediaFile || !selectedMediaTripId) return;
+    setUploadingMedia(true);
+    try {
+      await driverApi(driverId, `/driver/trips/${selectedMediaTripId}/media?caption=${encodeURIComponent(mediaCaption.trim())}`, {
+        method: 'POST',
+        headers: { 'Content-Type': mediaFile.type },
+        body: mediaFile,
+      });
+      setMediaFile(null);
+      setMediaCaption('');
+      if (mediaInput.current) mediaInput.current.value = '';
+      setToast({ kind: 'success', message: 'Trip image uploaded.' });
+    } catch (error) {
+      setToast({ kind: 'error', message: error instanceof Error ? error.message : 'Trip image could not be uploaded.' });
+    } finally { setUploadingMedia(false); }
   };
 
   const tripsFor = (filter: TripFilter) => trips[filter];
@@ -575,6 +606,40 @@ const DriverDashboard: React.FC<DriverDashboardProps> = ({
                 {tripSection('Completed', 'completed', <CheckCircle2 size={18} />)}
               </>
             )}
+            <section className="space-y-3 border-t border-slate-200 pt-5" aria-labelledby="driver-trip-media-heading">
+              <div>
+                <h2 id="driver-trip-media-heading" className="text-base font-bold text-slate-900">Trip Media Upload</h2>
+                <p className="text-xs text-slate-500">Add an image to one of your assigned trips.</p>
+              </div>
+              {!driverId ? (
+                <EmptyState icon={<Upload size={22} />} message="Select a driver profile to upload trip media." />
+              ) : assignedTrips.length === 0 ? (
+                <EmptyState icon={<Upload size={22} />} message="No assigned trips are available for media upload." />
+              ) : (
+                <form onSubmit={uploadTripMedia} className="grid gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-2xs sm:grid-cols-2">
+                  <label className="space-y-1 text-xs font-semibold text-slate-700">
+                    <span>Assigned trip</span>
+                    <select required value={mediaTripId || String(assignedTrips[0].tripId)} onChange={(event) => setMediaTripId(event.target.value)} className={inputClass}>
+                      {assignedTrips.map((trip) => <option key={trip.tripId} value={trip.tripId}>{routeTitle(trip)} · Trip #{trip.tripId}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-xs font-semibold text-slate-700">
+                    <span>Image</span>
+                    <input ref={mediaInput} required type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setMediaFile(event.target.files?.[0] ?? null)} className={`${inputClass} file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-blue-800`} />
+                  </label>
+                  <label className="space-y-1 text-xs font-semibold text-slate-700 sm:col-span-2">
+                    <span>Caption <span className="font-normal text-slate-500">(optional)</span></span>
+                    <input value={mediaCaption} maxLength={300} onChange={(event) => setMediaCaption(event.target.value)} className={inputClass} />
+                  </label>
+                  <div className="flex items-center justify-between gap-3 sm:col-span-2">
+                    <span className="truncate text-xs text-slate-500">{mediaFile ? mediaFile.name : 'JPEG, PNG, or WebP · 8 MB maximum'}</span>
+                    <button type="submit" disabled={uploadingMedia || !mediaFile} className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
+                      <Upload size={14} />{uploadingMedia ? 'Uploading…' : 'Upload image'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </section>
           </section>
         )}
 

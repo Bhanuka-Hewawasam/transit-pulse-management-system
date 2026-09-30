@@ -1,9 +1,10 @@
 import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import { database, nextId } from './database.js';
 import { calculateSegmentFare, calculateTotalFare } from '../../src/utils/routeFare.js';
 import type { Booking, Driver, Feedback, Passenger, Payment, PaymentMethod, Route, Trip, Vehicle } from '../../src/types/index.js';
-import { mongodbContent, mongodbCreateAnnouncement, mongodbHealth, mongodbPassengerReviews, type TravelAnnouncementInput } from './mongodbAdapter.js';
+import { mongodbContent, mongodbCreateAnnouncement, mongodbCreatePassengerReview, mongodbCreateTripMedia, mongodbHealth, mongodbPassengerReviews, mongodbTripMediaImage, type PassengerReviewInput, type TravelAnnouncementInput } from './mongodbAdapter.js';
 import {
   oracleCreate, oracleHealth, oracleList, oraclePassengerBookSeat, oraclePassengerBookSeats, oraclePassengerBookings, oraclePassengerCancelBooking,
   oraclePassengerExists, oraclePassengerPayBooking, oraclePassengerPayBookings, oraclePassengerProfile, oraclePassengerSearchTrips,
@@ -38,12 +39,14 @@ app.get('/api/payments', list('payments'));
 app.get('/api/maintenance', list('maintenance'));
 app.get('/api/feedback', list('feedback'));
 const demoAnnouncements: Record<string, unknown>[] = [{ id: 'announcement-1', type: 'announcement', title: 'Holiday timetable', message: 'Extra Colombo to Kandy trips are available during the holiday period.', audience: 'all', status: 'published', priority: 'normal', startDate: '2026-01-01', active: true, createdAt: '2026-01-01T00:00:00.000Z' }];
+const demoTripMedia: Record<string, unknown>[] = [];
+const demoTripMediaImages = new Map<string, { contentType: string; image: Buffer }>();
 const demoMongoContent = () => ({
   demo: true,
   reviews: database.feedback,
   announcements: demoAnnouncements,
   documents: database.vehicles.slice(0, 3).map((vehicle) => ({ id: `document-${vehicle.id}`, title: `${vehicle.registrationNumber} · Insurance document`, detail: `${vehicle.make} ${vehicle.model} document record`, meta: `Expires ${vehicle.nextMaintenanceDate}` })),
-  media: database.trips.slice(0, 3).map((trip) => ({ id: `media-${trip.id}`, title: `${trip.routeCode} trip media`, detail: `Photo/video reference for ${trip.origin} to ${trip.destination}`, meta: `${trip.vehicleReg ?? 'Vehicle'} · Demo media` })),
+  media: [...database.trips.slice(0, 3).map((trip) => ({ id: `media-${trip.id}`, title: `${trip.routeCode} trip media`, detail: `Photo/video reference for ${trip.origin} to ${trip.destination}`, meta: `${trip.vehicleReg ?? 'Vehicle'} · Demo media` })), ...demoTripMedia],
 });
 app.get('/api/health/oracle', async (_request, response) => response.json(await oracleHealth()));
 app.get('/api/health/mongodb', async (_request, response) => response.json(await mongodbHealth()));
@@ -123,6 +126,16 @@ app.get('/api/mongodb/media', async (_request, response) => {
   if ((await mongodbHealth()).connected) return response.json((await mongodbContent()).media);
   if (process.env.DATABASE_MODE === 'demo') return response.json(demoMongoContent().media);
   return response.status(503).json({ error: 'MongoDB is unavailable; demo content is disabled outside demo mode.' });
+});
+app.get('/api/mongodb/media/:id/image', async (request, response) => {
+  const health = await mongodbHealth();
+  const image = health.connected
+    ? await mongodbTripMediaImage(request.params.id)
+    : process.env.DATABASE_MODE === 'demo' ? demoTripMediaImages.get(request.params.id) : null;
+  if (!image) return response.status(404).json({ error: 'Trip media image was not found.' });
+  response.set('Content-Type', image.contentType);
+  response.set('Cache-Control', 'public, max-age=86400');
+  return response.send(image.image);
 });
 
 function create<T extends { id: number }>(collection: T[], body: Record<string, unknown>, fields: string[], transform: (id: number) => T): void | never {
@@ -490,6 +503,61 @@ app.post('/api/passenger/feedback', requireActingPassenger, passengerEndpoint(as
   return void response.status(201).json({ tripId, rating, category });
 }));
 
+app.post('/api/mongodb/feedback', requireActingPassenger, passengerEndpoint(async (request, response, passengerId) => {
+  const tripId = Number(request.body.tripId);
+  const rating = Number(request.body.rating);
+  const comment = String(request.body.comment ?? '').trim();
+  const category = String(request.body.category ?? 'general').toLowerCase();
+  if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(rating) || rating < 1 || rating > 5 || !comment) {
+    return void response.status(400).json({ error: 'tripId, a 1-5 rating, and comment are required.' });
+  }
+  if (!['service', 'driver', 'vehicle', 'punctuality', 'general'].includes(category)) {
+    return void response.status(400).json({ error: 'Feedback category is not valid.' });
+  }
+
+  const mongo = await mongodbHealth();
+  if (!mongo.connected && process.env.DATABASE_MODE !== 'demo') {
+    return void response.status(503).json({ error: 'MongoDB is unavailable; feedback cannot be saved.' });
+  }
+
+  if (process.env.DATABASE_MODE === 'oracle') {
+    await oraclePassengerSubmitFeedback(passengerId, tripId, rating, comment, category);
+  } else {
+    const trip = database.trips.find((item) => item.id === tripId);
+    if (!trip) return void response.status(404).json({ error: 'Trip was not found.' });
+    if (trip.status !== 'completed') return void response.status(400).json({ error: 'Feedback is allowed only for completed trips.' });
+    if (!database.bookings.some((booking) => booking.passengerId === passengerId && booking.tripId === tripId && booking.status !== 'cancelled')) {
+      return void response.status(400).json({ error: 'Passenger must have a non-cancelled booking for this trip.' });
+    }
+    if (database.feedback.some((item) => item.passengerId === passengerId && item.tripId === tripId)) {
+      return void response.status(400).json({ error: 'Passenger has already submitted feedback for this trip.' });
+    }
+  }
+
+  const trip = database.trips.find((item) => item.id === tripId);
+  const input: PassengerReviewInput = {
+    passengerId, tripId, rating, category, comment,
+    ...(trip ? { routeId: trip.routeId, driverId: trip.driverId, vehicleId: trip.vehicleId } : {}),
+  };
+  if (mongo.connected) {
+    const review = await mongodbCreatePassengerReview(input);
+    if (process.env.DATABASE_MODE === 'demo') {
+      database.feedback.push({
+        id: nextId(database.feedback), passengerId, tripId, driverId: trip?.driverId ?? null,
+        vehicleId: trip?.vehicleId ?? null, rating, comment, category: category as Feedback['category'], feedbackDate: String(review.createdAt),
+      } as Feedback);
+    }
+    return void response.status(201).json(review);
+  }
+
+  const feedback: Feedback = {
+    id: nextId(database.feedback), passengerId, tripId, driverId: trip!.driverId, vehicleId: trip!.vehicleId,
+    rating, comment, feedbackDate: new Date().toISOString(), category: category as Feedback['category'],
+  };
+  database.feedback.push(feedback);
+  return void response.status(201).json({ tripId, rating, category });
+}));
+
 app.get('/api/passenger/profile', requireActingPassenger, passengerEndpoint(async (_request, response, passengerId) => {
   if (process.env.DATABASE_MODE === 'oracle') {
     const profile = await oraclePassengerProfile(passengerId);
@@ -560,6 +628,47 @@ const driverProfile = (driver: Driver) => ({
   email: driver.email, licenseNumber: driver.licenseNumber, licenseExpiry: driver.licenseExpiry,
   status: driver.status, rating: driver.rating, totalTrips: driver.totalTrips,
 });
+
+const validImage = (image: Buffer, contentType: string) => {
+  if (contentType === 'image/jpeg') return image.length >= 3 && image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff;
+  if (contentType === 'image/png') return image.length >= 8 && image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (contentType === 'image/webp') return image.length >= 12 && image.toString('ascii', 0, 4) === 'RIFF' && image.toString('ascii', 8, 12) === 'WEBP';
+  return false;
+};
+
+app.post('/api/driver/trips/:tripId/media', requireActingDriver, express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '8mb' }), driverEndpoint(async (request, response, driverId) => {
+  const tripId = Number(request.params.tripId);
+  if (!Number.isInteger(tripId) || tripId <= 0) return void response.status(400).json({ error: 'tripId must be a positive integer.' });
+  const contentType = request.get('Content-Type')?.split(';', 1)[0].toLowerCase() ?? '';
+  const image = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
+  if (!validImage(image, contentType)) return void response.status(400).json({ error: 'Upload a valid JPEG, PNG, or WebP image.' });
+  const caption = String(request.query.caption ?? '').trim();
+  if (caption.length > 300) return void response.status(400).json({ error: 'Caption must be 300 characters or fewer.' });
+
+  let routeId: number | undefined;
+  if (process.env.DATABASE_MODE === 'oracle') {
+    const manifest = await oracleDriverManifest(driverId, tripId);
+    if (manifest === null) return void response.status(404).json({ error: 'Trip was not found for this driver.' });
+  } else {
+    const trip = database.trips.find((item) => item.id === tripId && item.driverId === driverId);
+    if (!trip) return void response.status(404).json({ error: 'Trip was not found for this driver.' });
+    routeId = trip.routeId;
+  }
+
+  const mongo = await mongodbHealth();
+  if (!mongo.connected && process.env.DATABASE_MODE !== 'demo') {
+    return void response.status(503).json({ error: 'MongoDB is unavailable; trip media cannot be saved.' });
+  }
+  const input = { tripId, driverId, ...(routeId === undefined ? {} : { routeId }), caption, contentType, image };
+  if (mongo.connected) return void response.status(201).json(await mongodbCreateTripMedia(input));
+
+  const id = randomUUID();
+  const url = `/api/mongodb/media/${id}/image`;
+  demoTripMediaImages.set(id, { contentType, image });
+  const media = { id, tripId, driverId, ...(routeId === undefined ? {} : { routeId }), mediaType: 'photo', caption, uploadedBy: `driver:${driverId}`, createdAt: new Date().toISOString(), url };
+  demoTripMedia.push(media);
+  return void response.status(201).json(media);
+}));
 
 const demoDriverSummary = (driverId: number) => {
   const driver = database.drivers.find((item) => item.id === driverId)!;
